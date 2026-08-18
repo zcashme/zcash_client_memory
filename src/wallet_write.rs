@@ -29,7 +29,7 @@ use zcash_client_backend::{
 use zcash_primitives::transaction::Transaction;
 use zcash_protocol::{
     PoolType,
-    ShieldedProtocol::{self, Sapling},
+    ShieldedPool::{self, Sapling},
     TxId,
     consensus::{self, BlockHeight, NetworkUpgrade},
 };
@@ -43,8 +43,7 @@ use crate::{
 #[cfg(feature = "orchard")]
 use {
     shardtree::error::ShardTreeError, std::collections::BTreeMap,
-    zcash_client_backend::data_api::ORCHARD_SHARD_HEIGHT,
-    zcash_protocol::ShieldedProtocol::Orchard,
+    zcash_client_backend::data_api::ORCHARD_SHARD_HEIGHT, zcash_protocol::ShieldedPool::Orchard,
 };
 
 #[cfg(feature = "transparent-inputs")]
@@ -390,19 +389,16 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
             #[cfg(feature = "orchard")]
             self.insert_orchard_nullifier_map(block.height(), block.orchard().nullifier_map())?;
             note_positions.extend(block.transactions().iter().flat_map(|wtx| {
-                let iter = wtx.sapling_outputs().iter().map(|out| {
-                    (
-                        ShieldedProtocol::Sapling,
-                        out.note_commitment_tree_position(),
-                    )
-                });
+                let iter = wtx
+                    .sapling_outputs()
+                    .iter()
+                    .map(|out| (ShieldedPool::Sapling, out.note_commitment_tree_position()));
                 #[cfg(feature = "orchard")]
-                let iter = iter.chain(wtx.orchard_outputs().iter().map(|out| {
-                    (
-                        ShieldedProtocol::Orchard,
-                        out.note_commitment_tree_position(),
-                    )
-                }));
+                let iter = iter.chain(
+                    wtx.orchard_outputs()
+                        .iter()
+                        .map(|out| (ShieldedPool::Orchard, out.note_commitment_tree_position())),
+                );
 
                 iter
             }));

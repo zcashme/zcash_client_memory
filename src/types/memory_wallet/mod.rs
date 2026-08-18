@@ -31,7 +31,7 @@ use zcash_client_backend::{
 use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_primitives::transaction::Transaction;
 use zcash_protocol::{
-    ShieldedProtocol, TxId,
+    ShieldedPool, TxId,
     consensus::{self, BlockHeight, NetworkUpgrade, TxIndex},
 };
 use zip32::{Scope, fingerprint::SeedFingerprint};
@@ -775,7 +775,7 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
     pub(crate) fn scan_complete(
         &mut self,
         range: Range<BlockHeight>,
-        wallet_note_positions: &[(ShieldedProtocol, Position)],
+        wallet_note_positions: &[(ShieldedPool, Position)],
     ) -> Result<(), Error> {
         let wallet_birthday = self.get_wallet_birthday()?;
 
@@ -790,12 +790,12 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             let mut required_orchard_subtrees = BTreeSet::new();
             for (protocol, position) in wallet_note_positions {
                 match protocol {
-                    ShieldedProtocol::Sapling => {
+                    ShieldedPool::Sapling => {
                         required_sapling_subtrees.insert(
                             Address::above_position(SAPLING_SHARD_HEIGHT.into(), *position).index(),
                         );
                     }
-                    ShieldedProtocol::Orchard => {
+                    ShieldedPool::Orchard => {
                         #[cfg(feature = "orchard")]
                         required_orchard_subtrees.insert(
                             Address::above_position(ORCHARD_SHARD_HEIGHT.into(), *position).index(),
@@ -804,11 +804,12 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
                         #[cfg(not(feature = "orchard"))]
                         return Err(Error::OrchardNotEnabled);
                     }
+                    ShieldedPool::Ironwood => todo!(),
                 }
             }
 
             let extended_range = self.extend_range(
-                &ShieldedProtocol::Sapling,
+                &ShieldedPool::Sapling,
                 &range,
                 required_sapling_subtrees,
                 self.params.activation_height(NetworkUpgrade::Sapling),
@@ -818,7 +819,7 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             #[cfg(feature = "orchard")]
             let extended_range = self
                 .extend_range(
-                    &ShieldedProtocol::Orchard,
+                    &ShieldedPool::Orchard,
                     extended_range.as_ref().unwrap_or(&range),
                     required_orchard_subtrees,
                     self.params.activation_height(NetworkUpgrade::Nu5),
@@ -861,7 +862,7 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
     // given subtree indices, bounded by the wallet birthday and the fallback start height.
     fn extend_range(
         &self,
-        pool: &ShieldedProtocol,
+        pool: &ShieldedPool,
         range: &Range<BlockHeight>,
         required_subtree_indices: BTreeSet<u64>,
         fallback_start_height: Option<BlockHeight>,
@@ -875,11 +876,11 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
 
         let shard_end = |index| -> Result<_, Error> {
             match pool {
-                ShieldedProtocol::Sapling => Ok(self
+                ShieldedPool::Sapling => Ok(self
                     .sapling_tree_shard_end_heights
                     .get(&Address::from_parts(SAPLING_SHARD_HEIGHT.into(), index))
                     .cloned()),
-                ShieldedProtocol::Orchard => {
+                ShieldedPool::Orchard => {
                     #[cfg(feature = "orchard")]
                     {
                         Ok(self
@@ -890,6 +891,7 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
                     #[cfg(not(feature = "orchard"))]
                     panic!("Unsupported pool")
                 }
+                ShieldedPool::Ironwood => todo!(),
             }
         };
 

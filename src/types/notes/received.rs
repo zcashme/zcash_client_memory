@@ -8,7 +8,7 @@ use std::{
 use zip32::Scope;
 
 use zcash_primitives::transaction::TxId;
-use zcash_protocol::{PoolType, ShieldedProtocol::Sapling, memo::Memo};
+use zcash_protocol::{PoolType, ShieldedPool::Sapling, memo::Memo};
 
 use zcash_client_backend::{
     data_api::{ReceivedNotes, SentTransactionOutput},
@@ -18,9 +18,7 @@ use zcash_client_backend::{
 use crate::AccountId;
 
 #[cfg(feature = "orchard")]
-use {
-    zcash_client_backend::wallet::WalletOrchardOutput, zcash_protocol::ShieldedProtocol::Orchard,
-};
+use {zcash_client_backend::wallet::WalletOrchardOutput, zcash_protocol::ShieldedPool::Orchard};
 
 use crate::{Nullifier, error::Error};
 
