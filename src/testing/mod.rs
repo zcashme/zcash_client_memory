@@ -5,6 +5,7 @@ use zcash_client_backend::data_api::testing::CacheInsertionResult;
 use zcash_client_backend::{
     data_api::{
         OutputOfSentTx, SAPLING_SHARD_HEIGHT, WalletTest,
+        anchor_retention::AnchorRetentionInterval,
         testing::{DataStoreFactory, Reset, TestCache, TestState},
     },
     proto::compact_formats::CompactBlock,
@@ -57,6 +58,7 @@ impl DataStoreFactory for TestMemDbFactory {
     fn new_data_store(
         &self,
         network: LocalNetwork,
+        _anchor_retention_interval: Option<AnchorRetentionInterval>,
         #[cfg(feature = "transparent-inputs")] _gap_limits: Option<GapLimits>,
     ) -> Result<Self::DataStore, Self::Error> {
         Ok(MemoryWalletDb::new(network, 100))
@@ -363,6 +365,7 @@ where
                         0,            // Unimplemented: memo_count
                         false,        // Unimplemented: expired_unmined
                         is_shielding, // is_shielding
+                        None,         // pool_crossing_value (unimplemented)
                     ),
                 )
             })
