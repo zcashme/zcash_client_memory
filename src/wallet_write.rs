@@ -795,6 +795,83 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
             }
         }
 
+        #[cfg(feature = "orchard")]
+        for output in d_tx.ironwood_outputs() {
+            #[cfg(feature = "transparent-inputs")]
+            {
+                tx_has_wallet_outputs = true;
+            }
+            match output.transfer_type() {
+                TransferType::Outgoing => {
+                    let note = output.to_wallet_note();
+                    let recipient = {
+                        let receiver = note.receiver();
+                        let wallet_address = self
+                            .accounts
+                            .get(*output.account())
+                            .map(|acc| {
+                                acc.select_receiving_address(self.params.network_type(), &receiver)
+                            })
+                            .transpose()?
+                            .flatten()
+                            .unwrap_or_else(|| {
+                                receiver.to_zcash_address(self.params.network_type())
+                            });
+
+                        Recipient::External {
+                            recipient_address: wallet_address,
+                            output_pool: PoolType::Shielded(note.pool()),
+                        }
+                    };
+
+                    let sent_tx_output = SentTransactionOutput::from_parts(
+                        output.index(),
+                        recipient,
+                        note.value(),
+                        Some(output.memo().clone()),
+                    );
+                    self.sent_notes.put_sent_output(
+                        d_tx.tx().txid(),
+                        *output.account(),
+                        &sent_tx_output,
+                    );
+                }
+                TransferType::AccountInternal => {
+                    let note = output.to_wallet_note();
+                    let value = note.value();
+                    let recipient = Recipient::InternalShielded {
+                        receiving_account: *output.account(),
+                        external_address: None,
+                        note: Box::new(note),
+                    };
+                    let sent_tx_output = SentTransactionOutput::from_parts(
+                        output.index(),
+                        recipient,
+                        value,
+                        Some(output.memo().clone()),
+                    );
+
+                    self.received_notes
+                        .insert_received_note(ReceivedNote::from_sent_tx_output(
+                            d_tx.tx().txid(),
+                            &sent_tx_output,
+                        )?);
+
+                    self.sent_notes.put_sent_output(
+                        d_tx.tx().txid(),
+                        *output.account(),
+                        &sent_tx_output,
+                    );
+                }
+                TransferType::Incoming => {
+                    todo!("store decrypted tx ironwood incoming")
+                }
+                TransferType::WalletInternal => unreachable!(
+                    "TransferType::WalletInternal is only produced for transparent outputs"
+                ),
+            }
+        }
+
         // If any of the utxos spent in the transaction are ours, mark them as spent.
         #[cfg(feature = "transparent-inputs")]
         for txin in d_tx
