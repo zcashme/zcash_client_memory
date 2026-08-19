@@ -21,6 +21,7 @@ use zcash_client_backend::{
         WalletCommitmentTrees as _, Zip32Derivation,
         chain::ChainState,
         error::RewindError,
+        ll::ReceivedShieldedOutput,
         scanning::{ScanPriority, ScanRange},
     },
     keys::{UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey},
@@ -648,8 +649,9 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
 
             match output.transfer_type() {
                 TransferType::Outgoing => {
+                    let note = output.to_wallet_note();
                     let recipient = {
-                        let receiver = Receiver::Sapling(output.note().recipient());
+                        let receiver = note.receiver();
                         let wallet_address = self
                             .accounts
                             .get(*output.account())
@@ -664,14 +666,14 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
 
                         Recipient::External {
                             recipient_address: wallet_address,
-                            output_pool: PoolType::SAPLING,
+                            output_pool: PoolType::Shielded(note.pool()),
                         }
                     };
 
                     let sent_tx_output = SentTransactionOutput::from_parts(
                         output.index(),
                         recipient,
-                        output.note_value(),
+                        note.value(),
                         Some(output.memo().clone()),
                     );
                     self.sent_notes.put_sent_output(
@@ -681,15 +683,17 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                     );
                 }
                 TransferType::AccountInternal => {
+                    let note = output.to_wallet_note();
+                    let value = note.value();
                     let recipient = Recipient::InternalShielded {
                         receiving_account: *output.account(),
                         external_address: None,
-                        note: Box::new(Note::Sapling(output.note().clone())),
+                        note: Box::new(note),
                     };
                     let sent_tx_output = SentTransactionOutput::from_parts(
                         output.index(),
                         recipient,
-                        output.note_value(),
+                        value,
                         Some(output.memo().clone()),
                     );
 
@@ -722,9 +726,9 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
             }
             match output.transfer_type() {
                 TransferType::Outgoing => {
+                    let note = output.to_wallet_note();
                     let recipient = {
-                        let (note, _) = output.note();
-                        let receiver = Receiver::Orchard(note.recipient());
+                        let receiver = note.receiver();
                         let wallet_address = self
                             .accounts
                             .get(*output.account())
@@ -739,14 +743,14 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
 
                         Recipient::External {
                             recipient_address: wallet_address,
-                            output_pool: PoolType::ORCHARD,
+                            output_pool: PoolType::Shielded(note.pool()),
                         }
                     };
 
                     let sent_tx_output = SentTransactionOutput::from_parts(
                         output.index(),
                         recipient,
-                        output.note_value(),
+                        note.value(),
                         Some(output.memo().clone()),
                     );
                     self.sent_notes.put_sent_output(
@@ -756,16 +760,17 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                     );
                 }
                 TransferType::AccountInternal => {
-                    let (orchard_note, orchard_pool) = output.note();
+                    let note = output.to_wallet_note();
+                    let value = note.value();
                     let recipient = Recipient::InternalShielded {
                         receiving_account: *output.account(),
                         external_address: None,
-                        note: Box::new(Note::Orchard { note: *orchard_note, pool: *orchard_pool }),
+                        note: Box::new(note),
                     };
                     let sent_tx_output = SentTransactionOutput::from_parts(
                         output.index(),
                         recipient,
-                        output.note_value(),
+                        value,
                         Some(output.memo().clone()),
                     );
 
@@ -1302,7 +1307,6 @@ fn range_from(i: u32, n: u32) -> Range<u32> {
     first..last
 }
 
-use zcash_client_backend::wallet::Note;
 use zcash_keys::address::Receiver;
 use zcash_keys::encoding::AddressCodec;
 #[cfg(feature = "orchard")]
