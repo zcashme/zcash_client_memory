@@ -23,7 +23,7 @@ use zcash_protocol::ShieldedPool::Orchard;
 use {
     ::transparent::{address::TransparentAddress, bundle::OutPoint},
     zcash_client_backend::{
-        data_api::{TransactionStatus, TransparentOutputFilter},
+        data_api::{CoinbaseFilter, TransactionStatus},
         wallet::WalletTransparentOutput,
     },
     zcash_protocol::consensus::BlockHeight,
@@ -189,7 +189,7 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
         address: &TransparentAddress,
         target_height: TargetHeight,
         confirmations_policy: ConfirmationsPolicy,
-        output_filter: TransparentOutputFilter,
+        output_filter: CoinbaseFilter,
     ) -> Result<Vec<WalletTransparentOutput<AccountId>>, Self::Error> {
         // TODO: take into consideration coinbase maturity
         // See <https://github.com/zcash/librustzcash/issues/821>
@@ -203,12 +203,18 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
                     .unwrap_or(false)
             })
             .filter(|(_, _, tx)| match output_filter {
-                TransparentOutputFilter::All => true,
+                CoinbaseFilter::AllTransparentOutputs => true,
                 // Coinbase transactions have tx_index == 0. If tx_index is unknown
                 // (None), conservatively treat it as **non-coinbase**, matching the SQL
                 // implementation's IFNULL(tx_index, 1) == 0 behavior.
-                TransparentOutputFilter::CoinbaseOnly => {
+                CoinbaseFilter::CoinbaseOnly => {
                     tx.is_some_and(|tx| tx.tx_index().unwrap_or(1) == 0)
+                }
+                CoinbaseFilter::NonCoinbaseOnly => {
+                    // The complement of CoinbaseOnly: unknown tx_index defaults
+                    // to 1 (non-coinbase) to avoid false positives, so such
+                    // outputs are included.
+                    !tx.is_some_and(|tx| tx.tx_index().unwrap_or(1) == 0)
                 }
             })
             .filter_map(|(outpoint, txo, tx)| {
