@@ -203,7 +203,7 @@ where
         Ok(self
             .received_notes
             .iter()
-            .filter(|rn| rn.note.protocol() == protocol)
+            .filter(|rn| rn.note.pool() == protocol)
             .cloned()
             .map(Into::into)
             .collect())

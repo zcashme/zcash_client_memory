@@ -723,7 +723,8 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
             match output.transfer_type() {
                 TransferType::Outgoing => {
                     let recipient = {
-                        let receiver = Receiver::Orchard(output.note().recipient());
+                        let (note, _) = output.note();
+                        let receiver = Receiver::Orchard(note.recipient());
                         let wallet_address = self
                             .accounts
                             .get(*output.account())
@@ -755,10 +756,11 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                     );
                 }
                 TransferType::AccountInternal => {
+                    let (orchard_note, orchard_pool) = output.note();
                     let recipient = Recipient::InternalAccount {
                         receiving_account: *output.account(),
                         external_address: None,
-                        note: Box::new(Note::Orchard(*output.note())),
+                        note: Box::new(Note::Orchard { note: *orchard_note, pool: *orchard_pool }),
                     };
                     let sent_tx_output = SentTransactionOutput::from_parts(
                         output.index(),

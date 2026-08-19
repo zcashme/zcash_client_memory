@@ -58,7 +58,7 @@ impl SentNoteTable {
             Recipient::EphemeralTransparent { .. } => PoolType::Transparent,
             #[cfg(feature = "transparent-inputs")]
             Recipient::InternalTransparent { .. } => PoolType::Transparent,
-            Recipient::InternalAccount { note, .. } => PoolType::Shielded(note.protocol()),
+            Recipient::InternalAccount { note, .. } => PoolType::Shielded(note.pool()),
         };
         match pool_type {
             PoolType::Transparent => {
@@ -109,7 +109,7 @@ impl SentNoteTable {
             Recipient::EphemeralTransparent { .. } => PoolType::Transparent,
             #[cfg(feature = "transparent-inputs")]
             Recipient::InternalTransparent { .. } => PoolType::Transparent,
-            Recipient::InternalAccount { note, .. } => PoolType::Shielded(note.protocol()),
+            Recipient::InternalAccount { note, .. } => PoolType::Shielded(note.pool()),
         };
         match pool_type {
             PoolType::Transparent => {

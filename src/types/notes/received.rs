@@ -70,9 +70,12 @@ pub(crate) struct ReceivedNote {
 impl ReceivedNote {
     pub fn pool(&self) -> PoolType {
         match self.note {
-            Note::Sapling { .. } => PoolType::SAPLING,
+            Note::Sapling(_) => PoolType::SAPLING,
             #[cfg(feature = "orchard")]
-            Note::Orchard { .. } => PoolType::ORCHARD,
+            Note::Orchard { pool, .. } => match pool {
+                orchard::ValuePool::Orchard => PoolType::ORCHARD,
+                orchard::ValuePool::Ironwood => PoolType::IRONWOOD,
+            },
         }
     }
     pub fn account_id(&self) -> AccountId {
@@ -114,12 +117,19 @@ impl ReceivedNote {
                     recipient_key_scope: Some(Scope::Internal),
                 }),
                 #[cfg(feature = "orchard")]
-                Note::Orchard(note) => Ok(ReceivedNote {
-                    note_id: NoteId::new(txid, Orchard, output.output_index() as u16),
+                Note::Orchard { note, pool } => Ok(ReceivedNote {
+                    note_id: NoteId::new(
+                        txid,
+                        match *pool {
+                            orchard::ValuePool::Orchard => Orchard,
+                            orchard::ValuePool::Ironwood => zcash_protocol::ShieldedPool::Ironwood,
+                        },
+                        output.output_index() as u16,
+                    ),
                     txid,
                     output_index: output.output_index() as u32,
                     account_id: *receiving_account,
-                    note: Note::Orchard(*note),
+                    note: Note::Orchard { note: *note, pool: *pool },
                     nf: None,
                     is_change: true,
                     memo: output
@@ -158,12 +168,13 @@ impl ReceivedNote {
         note_id: NoteId,
         output: &WalletOrchardOutput<AccountId>,
     ) -> Self {
+        let (note, pool) = output.note();
         ReceivedNote {
             note_id,
             txid: *note_id.txid(),
             output_index: output.index() as u32,
             account_id: *output.account_id(),
-            note: Note::Orchard(*output.note()),
+            note: Note::Orchard { note: *note, pool: *pool },
             nf: output.nf().map(|nf| Nullifier::Orchard(*nf)),
             is_change: output.is_change(),
             memo: Memo::Empty,
@@ -292,20 +303,21 @@ impl DerefMut for ReceivedNoteTable {
 pub(crate) fn to_spendable_notes(
     sapling_received_notes: &[&ReceivedNote],
     #[cfg(feature = "orchard")] orchard_received_notes: &[&ReceivedNote],
+    #[cfg(feature = "orchard")] ironwood_received_notes: &[&ReceivedNote],
 ) -> Result<ReceivedNotes<NoteId>, Error> {
     let sapling = sapling_received_notes
         .iter()
-        .map(|note| {
+        .map(|rn| {
             #[allow(irrefutable_let_patterns)]
-            if let Note::Sapling(inner) = &note.note {
+            if let Note::Sapling(inner) = &rn.note {
                 Ok(zcash_client_backend::wallet::ReceivedNote::from_parts(
-                    note.note_id,
-                    note.txid(),
-                    note.output_index.try_into().unwrap(), // this overflow can never happen or else the chain is broken
+                    rn.note_id,
+                    rn.txid(),
+                    rn.output_index.try_into().unwrap(), // this overflow can never happen or else the chain is broken
                     inner.clone(),
-                    note.recipient_key_scope
+                    rn.recipient_key_scope
                         .ok_or(Error::Missing("recipient key scope".into()))?,
-                    note.commitment_tree_position
+                    rn.commitment_tree_position
                         .ok_or(Error::Missing("commitment tree position".into()))?,
                     None,
                     None,
@@ -319,16 +331,18 @@ pub(crate) fn to_spendable_notes(
     #[cfg(feature = "orchard")]
     let orchard = orchard_received_notes
         .iter()
-        .map(|note| {
-            if let Note::Orchard(inner) = &note.note {
+        .map(|rn| {
+            if let Note::Orchard { note: orchard_note, pool: orchard::ValuePool::Orchard } =
+                &rn.note
+            {
                 Ok(zcash_client_backend::wallet::ReceivedNote::from_parts(
-                    note.note_id,
-                    note.txid(),
-                    note.output_index.try_into().unwrap(), // this overflow can never happen or else the chain is broken
-                    *inner,
-                    note.recipient_key_scope
+                    rn.note_id,
+                    rn.txid(),
+                    rn.output_index.try_into().unwrap(), // this overflow can never happen or else the chain is broken
+                    *orchard_note,
+                    rn.recipient_key_scope
                         .ok_or(Error::Missing("recipient key scope".into()))?,
-                    note.commitment_tree_position
+                    rn.commitment_tree_position
                         .ok_or(Error::Missing("commitment tree position".into()))?,
                     None,
                     None,
@@ -339,10 +353,37 @@ pub(crate) fn to_spendable_notes(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    #[cfg(feature = "orchard")]
+    let ironwood = ironwood_received_notes
+        .iter()
+        .map(|rn| {
+            if let Note::Orchard { note: ironwood_note, pool: orchard::ValuePool::Ironwood } =
+                &rn.note
+            {
+                Ok(zcash_client_backend::wallet::ReceivedNote::from_parts(
+                    rn.note_id,
+                    rn.txid(),
+                    rn.output_index.try_into().unwrap(), // this overflow can never happen or else the chain is broken
+                    *ironwood_note,
+                    rn.recipient_key_scope
+                        .ok_or(Error::Missing("recipient key scope".into()))?,
+                    rn.commitment_tree_position
+                        .ok_or(Error::Missing("commitment tree position".into()))?,
+                    None,
+                    None,
+                ))
+            } else {
+                Err(Error::Other("Note is not an ironwood note".to_owned()))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     Ok(ReceivedNotes::new(
         sapling,
         #[cfg(feature = "orchard")]
         orchard,
+        #[cfg(feature = "orchard")]
+        ironwood,
     ))
 }
 

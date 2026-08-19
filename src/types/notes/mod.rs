@@ -74,15 +74,18 @@ mod serialization {
                     rho: None,
                 },
                 #[cfg(feature = "orchard")]
-                Note::Orchard(note) => Self {
-                    protocol: proto::ShieldedProtocol::Orchard.into(),
-                    recipient: note.recipient().to_raw_address_bytes().to_vec(),
-                    value: note.value().inner(),
-                    rseed: Some(proto::RSeed {
-                        rseed_type: None,
-                        payload: note.rseed().as_bytes().to_vec(),
-                    }),
-                    rho: Some(note.rho().to_bytes().to_vec()),
+                Note::Orchard { note, pool } => match pool {
+                    orchard::ValuePool::Orchard => Self {
+                        protocol: proto::ShieldedProtocol::Orchard.into(),
+                        recipient: note.recipient().to_raw_address_bytes().to_vec(),
+                        value: note.value().inner(),
+                        rseed: Some(proto::RSeed {
+                            rseed_type: None,
+                            payload: note.rseed().as_bytes().to_vec(),
+                        }),
+                        rho: Some(note.rho().to_bytes().to_vec()),
+                    },
+                    orchard::ValuePool::Ironwood => todo!(),
                 },
             }
         }
@@ -126,7 +129,17 @@ mod serialization {
                         &rho,
                     )
                     .unwrap();
-                    Self::Orchard(orchard::Note::from_parts(recipient, value, rho, rseed).unwrap())
+                    Self::Orchard {
+                        note: orchard::Note::from_parts(
+                            recipient,
+                            value,
+                            rho,
+                            rseed,
+                            orchard::NoteVersion::V2,
+                        )
+                        .unwrap(),
+                        pool: orchard::ValuePool::Orchard,
+                    }
                 }
                 #[cfg(not(feature = "orchard"))]
                 _ => panic!("invalid protocol"),

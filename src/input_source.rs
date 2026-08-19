@@ -52,7 +52,7 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
         Self::Error,
     > {
         let note = self.received_notes.iter().find(|rn| {
-            &rn.txid == txid && rn.note.protocol() == protocol && rn.output_index == index
+            &rn.txid == txid && rn.note.pool() == protocol && rn.output_index == index
         });
 
         Ok(if let Some(note) = note {
@@ -150,10 +150,26 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
             Vec::new()
         };
 
+        #[cfg(feature = "orchard")]
+        let ironwood_eligible_notes = if sources.contains(&ShieldedPool::Ironwood) {
+            self.select_spendable_notes_from_pool(
+                account,
+                target_value,
+                &ShieldedPool::Ironwood,
+                target_height,
+                confirmations_policy,
+                exclude,
+            )?
+        } else {
+            Vec::new()
+        };
+
         to_spendable_notes(
             &sapling_eligible_notes,
             #[cfg(feature = "orchard")]
             &orchard_eligible_notes,
+            #[cfg(feature = "orchard")]
+            &ironwood_eligible_notes,
         )
     }
 
@@ -289,7 +305,7 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             .received_notes
             .iter()
             .filter(|note| note.account_id == account)
-            .filter(|note| note.note.protocol() == *pool)
+            .filter(|note| note.note.pool() == *pool)
             .filter(|note| {
                 self.note_is_spendable(
                     note,
@@ -395,7 +411,7 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             .received_notes
             .iter()
             .filter(|note| note.account_id == account)
-            .filter(|note| note.note.protocol() == protocol)
+            .filter(|note| note.note.pool() == protocol)
             .filter(|note| {
                 self.note_is_spendable(
                     note,
