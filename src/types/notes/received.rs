@@ -95,7 +95,7 @@ impl ReceivedNote {
         output: &SentTransactionOutput<AccountId>,
     ) -> Result<Self, Error> {
         match output.recipient() {
-            Recipient::InternalAccount {
+            Recipient::InternalShielded {
                 receiving_account,
                 note,
                 ..

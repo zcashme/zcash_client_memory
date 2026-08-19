@@ -681,7 +681,7 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                     );
                 }
                 TransferType::AccountInternal => {
-                    let recipient = Recipient::InternalAccount {
+                    let recipient = Recipient::InternalShielded {
                         receiving_account: *output.account(),
                         external_address: None,
                         note: Box::new(Note::Sapling(output.note().clone())),
@@ -757,7 +757,7 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                 }
                 TransferType::AccountInternal => {
                     let (orchard_note, orchard_pool) = output.note();
-                    let recipient = Recipient::InternalAccount {
+                    let recipient = Recipient::InternalShielded {
                         receiving_account: *output.account(),
                         external_address: None,
                         note: Box::new(Note::Orchard { note: *orchard_note, pool: *orchard_pool }),
@@ -1167,7 +1167,7 @@ Instead derive the ufvk in the calling code and import it using `import_account_
                 self.sent_notes.insert_sent_output(sent_tx, output);
 
                 match output.recipient() {
-                    Recipient::InternalAccount { .. } => {
+                    Recipient::InternalShielded { .. } => {
                         self.received_notes.insert_received_note(
                             ReceivedNote::from_sent_tx_output(sent_tx.tx().txid(), output)?,
                         );

@@ -152,7 +152,7 @@ where
                             )),
                         )
                     }
-                    Recipient::InternalAccount { .. } => OutputOfSentTx::from_parts(
+                    Recipient::InternalShielded { .. } => OutputOfSentTx::from_parts(
                         note.value,
                         None,
                         #[cfg(feature = "transparent-inputs")]

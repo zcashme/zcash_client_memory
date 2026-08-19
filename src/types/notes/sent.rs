@@ -58,7 +58,7 @@ impl SentNoteTable {
             Recipient::EphemeralTransparent { .. } => PoolType::Transparent,
             #[cfg(feature = "transparent-inputs")]
             Recipient::InternalTransparent { .. } => PoolType::Transparent,
-            Recipient::InternalAccount { note, .. } => PoolType::Shielded(note.pool()),
+            Recipient::InternalShielded { note, .. } => PoolType::Shielded(note.pool()),
         };
         match pool_type {
             PoolType::Transparent => {
@@ -109,7 +109,7 @@ impl SentNoteTable {
             Recipient::EphemeralTransparent { .. } => PoolType::Transparent,
             #[cfg(feature = "transparent-inputs")]
             Recipient::InternalTransparent { .. } => PoolType::Transparent,
-            Recipient::InternalAccount { note, .. } => PoolType::Shielded(note.pool()),
+            Recipient::InternalShielded { note, .. } => PoolType::Shielded(note.pool()),
         };
         match pool_type {
             PoolType::Transparent => {
@@ -318,7 +318,7 @@ mod serialization {
                     outpoint: None,
                     note: None,
                 },
-                Recipient::InternalAccount {
+                Recipient::InternalShielded {
                     receiving_account,
                     external_address,
                     note,
@@ -370,7 +370,7 @@ mod serialization {
                         outpoint: read_optional!(recipient, outpoint)?.try_into()?,
                     }
                 }
-                proto::RecipientType::InternalAccount => Recipient::InternalAccount {
+                proto::RecipientType::InternalAccount => Recipient::InternalShielded {
                     receiving_account: read_optional!(recipient, account_id)?.into(),
                     external_address: recipient.address.map(|a| a.parse()).transpose()?,
                     note: Box::new(read_optional!(recipient, note)?.into()),
