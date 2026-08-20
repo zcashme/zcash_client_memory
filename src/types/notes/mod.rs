@@ -27,11 +27,15 @@ mod serialization {
                     zcash_protocol::ShieldedPool::Orchard => {
                         proto::PoolType::ShieldedOrchard.into()
                     }
+                    #[cfg(feature = "orchard")]
+                    zcash_protocol::ShieldedPool::Ironwood => {
+                        proto::PoolType::ShieldedIronwood.into()
+                    }
                     #[cfg(not(feature = "orchard"))]
-                    zcash_protocol::ShieldedPool::Orchard => panic!(
-                        "Attempting to deserialize orchard supporting wallet using library built without orchard feature"
+                    zcash_protocol::ShieldedPool::Orchard
+                    | zcash_protocol::ShieldedPool::Ironwood => panic!(
+                        "Attempting to deserialize orchard/ironwood supporting wallet using library built without orchard feature"
                     ),
-                    zcash_protocol::ShieldedPool::Ironwood => todo!(),
                 },
                 output_index: u32::from(note_id.output_index()),
             }
@@ -47,6 +51,8 @@ mod serialization {
                     proto::PoolType::ShieldedSapling => zcash_protocol::ShieldedPool::Sapling,
                     #[cfg(feature = "orchard")]
                     proto::PoolType::ShieldedOrchard => zcash_protocol::ShieldedPool::Orchard,
+                    #[cfg(feature = "orchard")]
+                    proto::PoolType::ShieldedIronwood => zcash_protocol::ShieldedPool::Ironwood,
                     _ => panic!("invalid pool"),
                 },
                 note_id.output_index.try_into()?,
@@ -85,7 +91,16 @@ mod serialization {
                         }),
                         rho: Some(note.rho().to_bytes().to_vec()),
                     },
-                    orchard::ValuePool::Ironwood => todo!(),
+                    orchard::ValuePool::Ironwood => Self {
+                        protocol: proto::ShieldedProtocol::Ironwood.into(),
+                        recipient: note.recipient().to_raw_address_bytes().to_vec(),
+                        value: note.value().inner(),
+                        rseed: Some(proto::RSeed {
+                            rseed_type: None,
+                            payload: note.rseed().as_bytes().to_vec(),
+                        }),
+                        rho: Some(note.rho().to_bytes().to_vec()),
+                    },
                 },
             }
         }
@@ -139,6 +154,33 @@ mod serialization {
                         )
                         .unwrap(),
                         pool: orchard::ValuePool::Orchard,
+                    }
+                }
+                #[cfg(feature = "orchard")]
+                proto::ShieldedProtocol::Ironwood => {
+                    let recipient = orchard::Address::from_raw_address_bytes(
+                        &note.recipient.try_into().unwrap(),
+                    )
+                    .unwrap();
+                    let value = orchard::value::NoteValue::from_raw(note.value);
+                    let rho =
+                        orchard::note::Rho::from_bytes(&note.rho.unwrap().try_into().unwrap())
+                            .unwrap();
+                    let rseed = orchard::note::RandomSeed::from_bytes(
+                        note.rseed.unwrap().payload.try_into().unwrap(),
+                        &rho,
+                    )
+                    .unwrap();
+                    Self::Orchard {
+                        note: orchard::Note::from_parts(
+                            recipient,
+                            value,
+                            rho,
+                            rseed,
+                            orchard::NoteVersion::V3,
+                        )
+                        .unwrap(),
+                        pool: orchard::ValuePool::Ironwood,
                     }
                 }
                 #[cfg(not(feature = "orchard"))]

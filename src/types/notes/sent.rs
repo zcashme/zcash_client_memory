@@ -10,6 +10,9 @@ use zcash_protocol::{PoolType, ShieldedPool::Sapling, TxId, memo::Memo, value::Z
 use crate::AccountId;
 
 #[cfg(feature = "orchard")]
+use zcash_protocol::ShieldedPool::Ironwood;
+
+#[cfg(feature = "orchard")]
 use zcash_protocol::ShieldedPool::Orchard;
 
 #[derive(PartialEq, PartialOrd, Eq, Ord, Debug, Clone)]
@@ -211,7 +214,7 @@ mod serialization {
                     pool: match note_id.protocol() {
                         ShieldedPool::Sapling => proto::PoolType::ShieldedSapling as i32,
                         ShieldedPool::Orchard => proto::PoolType::ShieldedOrchard as i32,
-                        ShieldedPool::Ironwood => todo!(),
+                        ShieldedPool::Ironwood => proto::PoolType::ShieldedIronwood as i32,
                     },
                 },
                 SentNoteId::Transparent { txid, output_index } => proto::NoteId {
@@ -239,8 +242,16 @@ mod serialization {
                     Orchard,
                     note_id.output_index.try_into()?,
                 )),
+                #[cfg(feature = "orchard")]
+                proto::PoolType::ShieldedIronwood => SentNoteId::Shielded(NoteId::new(
+                    read_optional!(note_id, tx_id)?.try_into()?,
+                    Ironwood,
+                    note_id.output_index.try_into()?,
+                )),
                 #[cfg(not(feature = "orchard"))]
-                proto::PoolType::ShieldedOrchard => return Err(Error::OrchardNotEnabled),
+                proto::PoolType::ShieldedOrchard | proto::PoolType::ShieldedIronwood => {
+                    return Err(Error::OrchardNotEnabled)
+                }
                 proto::PoolType::Transparent => SentNoteId::Transparent {
                     txid: read_optional!(note_id, tx_id)?.try_into()?,
                     output_index: note_id.output_index,
@@ -281,8 +292,10 @@ mod serialization {
                         PoolType::Shielded(Sapling) => proto::PoolType::ShieldedSapling,
                         #[cfg(feature = "orchard")]
                         PoolType::Shielded(Orchard) => proto::PoolType::ShieldedOrchard,
+                        #[cfg(feature = "orchard")]
+                        PoolType::Shielded(Ironwood) => proto::PoolType::ShieldedIronwood,
                         #[cfg(not(feature = "orchard"))]
-                        _ => panic!("Orchard not enabled"),
+                        _ => panic!("Orchard/Ironwood not enabled"),
                     } as i32),
 
                     account_id: None,
@@ -323,7 +336,7 @@ mod serialization {
                     external_address,
                     note,
                 } => proto::Recipient {
-                    recipient_type: proto::RecipientType::InternalAccount as i32,
+                    recipient_type: proto::RecipientType::InternalShielded as i32,
 
                     address: external_address.map(|a| a.to_string()),
                     pool_type: None,
@@ -350,8 +363,10 @@ mod serialization {
                             proto::PoolType::ShieldedSapling => PoolType::Shielded(Sapling),
                             #[cfg(feature = "orchard")]
                             proto::PoolType::ShieldedOrchard => PoolType::Shielded(Orchard),
+                            #[cfg(feature = "orchard")]
+                            proto::PoolType::ShieldedIronwood => PoolType::Shielded(Ironwood),
                             #[cfg(not(feature = "orchard"))]
-                            proto::PoolType::ShieldedOrchard => {
+                            proto::PoolType::ShieldedOrchard | proto::PoolType::ShieldedIronwood => {
                                 return Err(Error::OrchardNotEnabled);
                             }
                         },
@@ -370,7 +385,7 @@ mod serialization {
                         outpoint: read_optional!(recipient, outpoint)?.try_into()?,
                     }
                 }
-                proto::RecipientType::InternalAccount => Recipient::InternalShielded {
+                proto::RecipientType::InternalShielded => Recipient::InternalShielded {
                     receiving_account: read_optional!(recipient, account_id)?.into(),
                     external_address: recipient.address.map(|a| a.parse()).transpose()?,
                     note: Box::new(read_optional!(recipient, note)?.into()),

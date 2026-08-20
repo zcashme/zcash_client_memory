@@ -48,6 +48,7 @@ pub enum PoolType {
     Transparent = 0,
     ShieldedSapling = 1,
     ShieldedOrchard = 2,
+    ShieldedIronwood = 3,
 }
 impl PoolType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -59,6 +60,7 @@ impl PoolType {
             Self::Transparent => "Transparent",
             Self::ShieldedSapling => "ShieldedSapling",
             Self::ShieldedOrchard => "ShieldedOrchard",
+            Self::ShieldedIronwood => "ShieldedIronwood",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -67,6 +69,7 @@ impl PoolType {
             "Transparent" => Some(Self::Transparent),
             "ShieldedSapling" => Some(Self::ShieldedSapling),
             "ShieldedOrchard" => Some(Self::ShieldedOrchard),
+            "ShieldedIronwood" => Some(Self::ShieldedIronwood),
             _ => None,
         }
     }
@@ -76,6 +79,7 @@ impl PoolType {
 pub enum ShieldedProtocol {
     Sapling = 0,
     Orchard = 1,
+    Ironwood = 2,
 }
 impl ShieldedProtocol {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -86,6 +90,7 @@ impl ShieldedProtocol {
         match self {
             Self::Sapling => "sapling",
             Self::Orchard => "orchard",
+            Self::Ironwood => "ironwood",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -93,6 +98,7 @@ impl ShieldedProtocol {
         match value {
             "sapling" => Some(Self::Sapling),
             "orchard" => Some(Self::Orchard),
+            "ironwood" => Some(Self::Ironwood),
             _ => None,
         }
     }
@@ -287,7 +293,7 @@ impl Scope {
 pub enum RecipientType {
     ExternalRecipient = 0,
     EphemeralTransparent = 1,
-    InternalAccount = 2,
+    InternalShielded = 2,
     InternalTransparent = 3,
 }
 impl RecipientType {
@@ -299,7 +305,7 @@ impl RecipientType {
         match self {
             Self::ExternalRecipient => "ExternalRecipient",
             Self::EphemeralTransparent => "EphemeralTransparent",
-            Self::InternalAccount => "InternalAccount",
+            Self::InternalShielded => "InternalShielded",
             Self::InternalTransparent => "InternalTransparent",
         }
     }
@@ -308,7 +314,7 @@ impl RecipientType {
         match value {
             "ExternalRecipient" => Some(Self::ExternalRecipient),
             "EphemeralTransparent" => Some(Self::EphemeralTransparent),
-            "InternalAccount" => Some(Self::InternalAccount),
+            "InternalShielded" => Some(Self::InternalShielded),
             "InternalTransparent" => Some(Self::InternalTransparent),
             _ => None,
         }
@@ -441,6 +447,12 @@ pub struct MemoryWallet {
     /// the block heights corresponding to the last note commitment for each shard in the orchard tree
     #[prost(message, repeated, tag = "14")]
     pub orchard_tree_shard_end_heights: ::prost::alloc::vec::Vec<TreeEndHeightsRecord>,
+    /// Ironwood shielded pool shard tree
+    #[prost(message, optional, tag = "19")]
+    pub ironwood_tree: ::core::option::Option<ShardTree>,
+    /// the block heights corresponding to the last note commitment for each shard in the ironwood tree
+    #[prost(message, repeated, tag = "20")]
+    pub ironwood_tree_shard_end_heights: ::prost::alloc::vec::Vec<TreeEndHeightsRecord>,
     /// UTXOs known to this wallet
     #[prost(message, repeated, tag = "15")]
     pub transparent_received_outputs: ::prost::alloc::vec::Vec<
@@ -556,6 +568,8 @@ pub struct ChainState {
     pub final_sapling_tree: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "4")]
     pub final_orchard_tree: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub final_ironwood_tree: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WalletBlock {
@@ -586,6 +600,12 @@ pub struct WalletBlock {
     /// the number of Orchard actions in this block
     #[prost(uint32, optional, tag = "9")]
     pub orchard_action_count: ::core::option::Option<u32>,
+    /// the size of the Ironwood note commitment tree as of the end of this block
+    #[prost(uint32, optional, tag = "10")]
+    pub ironwood_commitment_tree_size: ::core::option::Option<u32>,
+    /// the number of Ironwood actions in this block
+    #[prost(uint32, optional, tag = "11")]
+    pub ironwood_action_count: ::core::option::Option<u32>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TransactionEntry {

@@ -384,6 +384,9 @@ impl<P: Parameters> From<&MemoryWalletDb<P>> for proto::MemoryWallet {
             #[cfg(not(feature = "orchard"))]
             orchard_tree_shard_end_heights: Vec::new(),
 
+            ironwood_tree: None,
+            ironwood_tree_shard_end_heights: Vec::new(),
+
             transparent_received_outputs: wallet
                 .transparent_received_outputs
                 .0

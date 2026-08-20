@@ -62,7 +62,7 @@ message Recipient {
 enum RecipientType {
   ExternalRecipient = 0;
   EphemeralTransparent = 1;
-  InternalAccount = 2;
+  InternalShielded = 2;
   InternalTransparent = 3;
 }
 
