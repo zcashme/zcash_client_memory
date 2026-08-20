@@ -340,6 +340,14 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             .map(|s| s.root_addr().index())
             .unwrap_or(0);
 
+        #[cfg(feature = "orchard")]
+        let next_ironwood_subtree_index = self
+            .ironwood_tree
+            .store()
+            .last_shard()?
+            .map(|s| s.root_addr().index())
+            .unwrap_or(0);
+
         // Treat Sapling and Orchard outputs as having the same cost to scan.
         let sapling_scan_progress =
             self.sapling_scan_progress(&birthday_height, &fully_scanned_height, &chain_tip_height)?;
@@ -372,7 +380,7 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             #[cfg(feature = "orchard")]
             next_orchard_subtree_index,
             #[cfg(feature = "orchard")]
-            todo!("ironwood_tree not yet implemented"),
+            next_ironwood_subtree_index,
         );
         Ok(Some(summary))
     }

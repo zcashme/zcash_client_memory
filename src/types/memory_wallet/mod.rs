@@ -38,7 +38,10 @@ use zcash_protocol::{
 use zip32::{Scope, fingerprint::SeedFingerprint};
 
 #[cfg(feature = "orchard")]
-use zcash_client_backend::{data_api::ORCHARD_SHARD_HEIGHT, wallet::WalletOrchardOutput};
+use zcash_client_backend::{
+    data_api::{IRONWOOD_SHARD_HEIGHT, ORCHARD_SHARD_HEIGHT},
+    wallet::WalletOrchardOutput,
+};
 
 #[cfg(feature = "transparent-inputs")]
 use {
@@ -91,6 +94,16 @@ pub struct MemoryWalletDb<P: consensus::Parameters> {
     #[cfg(feature = "orchard")]
     /// Stores the block height corresponding to the last note commitment in a shard
     pub(crate) orchard_tree_shard_end_heights: BTreeMap<Address, BlockHeight>,
+    /// Ironwood commitment tree
+    #[cfg(feature = "orchard")]
+    pub(crate) ironwood_tree: ShardTree<
+        MemoryShardStore<orchard::tree::MerkleHashOrchard, BlockHeight>,
+        { IRONWOOD_SHARD_HEIGHT * 2 },
+        IRONWOOD_SHARD_HEIGHT,
+    >,
+    #[cfg(feature = "orchard")]
+    /// Stores the block height corresponding to the last note commitment in a shard
+    pub(crate) ironwood_tree_shard_end_heights: BTreeMap<Address, BlockHeight>,
 
     /// Transparent outputs received by the wallet
     pub(crate) transparent_received_outputs: TransparentReceivedOutputs,
@@ -110,10 +123,11 @@ impl<P: consensus::Parameters + PartialEq> PartialEq for MemoryWalletDb<P> {
     /// but does NOT compare the sapling_tree and orchard_tree fields.
     fn eq(&self, other: &Self) -> bool {
         #[cfg(feature = "orchard")]
-        let orchard_comparisons =
-            { self.orchard_tree_shard_end_heights == other.orchard_tree_shard_end_heights };
+        let orchard_ironwood_comparisons =
+            { self.orchard_tree_shard_end_heights == other.orchard_tree_shard_end_heights
+            && self.ironwood_tree_shard_end_heights == other.ironwood_tree_shard_end_heights };
         #[cfg(not(feature = "orchard"))]
-        let orchard_comparisons = true;
+        let orchard_ironwood_comparisons = true;
 
         #[cfg(feature = "transparent-inputs")]
         let transparent_comparisons = {
@@ -136,7 +150,7 @@ impl<P: consensus::Parameters + PartialEq> PartialEq for MemoryWalletDb<P> {
             && self.tx_locator == other.tx_locator
             && self.scan_queue == other.scan_queue
             && self.sapling_tree_shard_end_heights == other.sapling_tree_shard_end_heights
-            && orchard_comparisons
+            && orchard_ironwood_comparisons
             && transparent_comparisons
             && self.transaction_data_request_queue == other.transaction_data_request_queue
     }
@@ -154,6 +168,10 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             orchard_tree: ShardTree::new(MemoryShardStore::empty(), max_checkpoints),
             #[cfg(feature = "orchard")]
             orchard_tree_shard_end_heights: BTreeMap::new(),
+            #[cfg(feature = "orchard")]
+            ironwood_tree: ShardTree::new(MemoryShardStore::empty(), max_checkpoints),
+            #[cfg(feature = "orchard")]
+            ironwood_tree_shard_end_heights: BTreeMap::new(),
             tx_table: TransactionTable::new(),
             received_notes: ReceivedNoteTable::new(),
             sent_notes: SentNoteTable::new(),
@@ -215,6 +233,21 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
                     // `frontier` is the tree state at the start of the block. Together, this means
                     // there exists a prior block for which frontier is the tree state at the end of
                     // the block.
+                    id: birthday.height() - 1,
+                    marking: Marking::Reference,
+                },
+            )?;
+        }
+
+        #[cfg(feature = "orchard")]
+        if let Some(frontier) = birthday.prior_chain_state().final_ironwood_tree().value() {
+            tracing::debug!("Inserting Ironwood frontier into ShardTree: {:?}", frontier);
+            // The same subtraction invariant as for Sapling/Orchard applies here:
+            // `frontier` is the Ironwood tree state at the end of the block before
+            // `birthday.height()`.
+            self.ironwood_tree.insert_frontier_nodes(
+                frontier.clone(),
+                Retention::Checkpoint {
                     id: birthday.height() - 1,
                     marking: Marking::Reference,
                 },
@@ -941,6 +974,8 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             let mut required_sapling_subtrees = BTreeSet::new();
             #[cfg(feature = "orchard")]
             let mut required_orchard_subtrees = BTreeSet::new();
+            #[cfg(feature = "orchard")]
+            let mut required_ironwood_subtrees = BTreeSet::new();
             for (protocol, position) in wallet_note_positions {
                 match protocol {
                     ShieldedPool::Sapling => {
@@ -957,7 +992,15 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
                         #[cfg(not(feature = "orchard"))]
                         return Err(Error::OrchardNotEnabled);
                     }
-                    ShieldedPool::Ironwood => todo!(),
+                    ShieldedPool::Ironwood => {
+                        #[cfg(feature = "orchard")]
+                        required_ironwood_subtrees.insert(
+                            Address::above_position(IRONWOOD_SHARD_HEIGHT.into(), *position).index(),
+                        );
+
+                        #[cfg(not(feature = "orchard"))]
+                        return Err(Error::OrchardNotEnabled);
+                    }
                 }
             }
 
@@ -976,6 +1019,17 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
                     extended_range.as_ref().unwrap_or(&range),
                     required_orchard_subtrees,
                     self.params.activation_height(NetworkUpgrade::Nu5),
+                    wallet_birthday,
+                )?
+                .or(extended_range);
+
+            #[cfg(feature = "orchard")]
+            let extended_range = self
+                .extend_range(
+                    &ShieldedPool::Ironwood,
+                    extended_range.as_ref().unwrap_or(&range),
+                    required_ironwood_subtrees,
+                    self.params.activation_height(NetworkUpgrade::Nu6_3),
                     wallet_birthday,
                 )?
                 .or(extended_range);
@@ -1044,7 +1098,17 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
                     #[cfg(not(feature = "orchard"))]
                     panic!("Unsupported pool")
                 }
-                ShieldedPool::Ironwood => todo!(),
+                ShieldedPool::Ironwood => {
+                    #[cfg(feature = "orchard")]
+                    {
+                        Ok(self
+                            .ironwood_tree_shard_end_heights
+                            .get(&Address::from_parts(IRONWOOD_SHARD_HEIGHT.into(), index))
+                            .cloned())
+                    }
+                    #[cfg(not(feature = "orchard"))]
+                    panic!("Unsupported pool")
+                }
             }
         };
 

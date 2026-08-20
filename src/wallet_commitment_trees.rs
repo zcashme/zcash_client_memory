@@ -1,9 +1,9 @@
 use std::convert::Infallible;
 
 use incrementalmerkletree::Address;
-use shardtree::{ShardTree, error::ShardTreeError, store::memory::MemoryShardStore};
+use shardtree::{ShardTree, error::ShardTreeError, store::memory::MemoryShardStore, store::ShardStore as _};
 #[cfg(feature = "orchard")]
-use zcash_client_backend::data_api::ORCHARD_SHARD_HEIGHT;
+use zcash_client_backend::data_api::{IRONWOOD_SHARD_HEIGHT, ORCHARD_SHARD_HEIGHT};
 use zcash_client_backend::data_api::{
     SAPLING_SHARD_HEIGHT, WalletCommitmentTrees, chain::CommitmentTreeRoot,
 };
@@ -73,6 +73,22 @@ impl<P: consensus::Parameters> WalletCommitmentTrees for MemoryWalletDb<P> {
         callback(&mut self.orchard_tree)
     }
 
+    /// Returns the stored root hash of the completed Sapling subtree with the given index,
+    /// or `Ok(None)` if no root is recorded for that subtree.
+    fn get_sapling_subtree_root(
+        &mut self,
+        index: u64,
+    ) -> Result<Option<sapling::Node>, ShardTreeError<Self::Error>> {
+        let root_addr = Address::from_parts(SAPLING_SHARD_HEIGHT.into(), index);
+        Ok(if let Some(shard) = self.sapling_tree.store().get_shard(root_addr).map_err(ShardTreeError::Storage)? {
+            shard
+                .max_position()
+                .and_then(|max_pos| shard.root_hash(max_pos).ok())
+        } else {
+            None
+        })
+    }
+
     /// Adds a sequence of note commitment tree subtree roots to the data store.
     #[cfg(feature = "orchard")]
     fn put_orchard_subtree_roots(
@@ -91,12 +107,88 @@ impl<P: consensus::Parameters> WalletCommitmentTrees for MemoryWalletDb<P> {
 
         // store the end block heights for each shard as well
         for (root, i) in roots.iter().zip(0u64..) {
-            let root_addr = Address::from_parts(SAPLING_SHARD_HEIGHT.into(), start_index + i);
+            let root_addr = Address::from_parts(ORCHARD_SHARD_HEIGHT.into(), start_index + i);
             self.orchard_tree_shard_end_heights
                 .insert(root_addr, root.subtree_end_height());
         }
 
         Ok(())
+    }
+
+    /// Returns the stored root hash of the completed Orchard subtree with the given index,
+    /// or `Ok(None)` if no root is recorded for that subtree.
+    #[cfg(feature = "orchard")]
+    fn get_orchard_subtree_root(
+        &mut self,
+        index: u64,
+    ) -> Result<Option<orchard::tree::MerkleHashOrchard>, ShardTreeError<Self::Error>> {
+        let root_addr = Address::from_parts(ORCHARD_SHARD_HEIGHT.into(), index);
+        Ok(if let Some(shard) = self.orchard_tree.store().get_shard(root_addr).map_err(ShardTreeError::Storage)? {
+            shard
+                .max_position()
+                .and_then(|max_pos| shard.root_hash(max_pos).ok())
+        } else {
+            None
+        })
+    }
+
+    #[cfg(feature = "orchard")]
+    fn with_ironwood_tree_mut<F, A, E>(&mut self, mut callback: F) -> Result<Option<A>, E>
+    where
+        for<'a> F: FnMut(
+            &'a mut ShardTree<
+                Self::OrchardShardStore<'a>,
+                { IRONWOOD_SHARD_HEIGHT * 2 },
+                IRONWOOD_SHARD_HEIGHT,
+            >,
+        ) -> Result<A, E>,
+        E: From<ShardTreeError<Self::Error>>,
+    {
+        tracing::debug!("with_ironwood_tree_mut");
+        callback(&mut self.ironwood_tree).map(Some)
+    }
+
+    /// Adds a sequence of Ironwood note commitment tree subtree roots to the data store.
+    #[cfg(feature = "orchard")]
+    fn put_ironwood_subtree_roots(
+        &mut self,
+        start_index: u64,
+        roots: &[CommitmentTreeRoot<orchard::tree::MerkleHashOrchard>],
+    ) -> Result<(), ShardTreeError<Self::Error>> {
+        tracing::debug!("put_ironwood_subtree_roots");
+        self.with_ironwood_tree_mut(|t| {
+            for (root, i) in roots.iter().zip(0u64..) {
+                let root_addr = Address::from_parts(IRONWOOD_SHARD_HEIGHT.into(), start_index + i);
+                t.insert(root_addr, *root.root_hash())?;
+            }
+            Ok::<_, ShardTreeError<Self::Error>>(())
+        })?;
+
+        // store the end block heights for each shard as well
+        for (root, i) in roots.iter().zip(0u64..) {
+            let root_addr = Address::from_parts(IRONWOOD_SHARD_HEIGHT.into(), start_index + i);
+            self.ironwood_tree_shard_end_heights
+                .insert(root_addr, root.subtree_end_height());
+        }
+
+        Ok(())
+    }
+
+    /// Returns the stored root hash of the completed Ironwood subtree with the given index,
+    /// or `Ok(None)` if no root is recorded for that subtree.
+    #[cfg(feature = "orchard")]
+    fn get_ironwood_subtree_root(
+        &mut self,
+        index: u64,
+    ) -> Result<Option<orchard::tree::MerkleHashOrchard>, ShardTreeError<Self::Error>> {
+        let root_addr = Address::from_parts(IRONWOOD_SHARD_HEIGHT.into(), index);
+        Ok(if let Some(shard) = self.ironwood_tree.store().get_shard(root_addr).map_err(ShardTreeError::Storage)? {
+            shard
+                .max_position()
+                .and_then(|max_pos| shard.root_hash(max_pos).ok())
+        } else {
+            None
+        })
     }
 }
 

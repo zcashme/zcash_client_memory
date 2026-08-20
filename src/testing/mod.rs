@@ -434,8 +434,12 @@ where
             }
             #[cfg(feature = "orchard")]
             ShieldedPool::Ironwood => {
-                // The Ironwood tree is added in a later commit; until then this
-                // test helper reports no checkpoints for the Ironwood pool.
+                self.ironwood_tree
+                    .store()
+                    .for_each_checkpoint(usize::MAX, |id, cp| {
+                        checkpoints.push((*id, cp.position()));
+                        Ok(())
+                    })?;
             }
             #[cfg(not(feature = "orchard"))]
             _ => {}

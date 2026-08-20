@@ -1254,6 +1254,10 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
             self.with_orchard_tree_mut(|tree| {
                 tree.truncate_to_checkpoint(&truncation_height).map(|_| ())
             })?;
+            #[cfg(feature = "orchard")]
+            {
+                todo!("truncate ironwood tree once put_blocks advances it");
+            }
 
             // Do not delete sent notes; this can contain data that is not recoverable
             // from the chain. Wallets must continue to operate correctly in the
