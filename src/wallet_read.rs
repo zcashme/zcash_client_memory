@@ -267,19 +267,39 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                 PoolType::ORCHARD => {
                     account_balance.with_orchard_balance_mut(update_balance_with_note)?;
                 }
+                #[cfg(feature = "orchard")]
+                PoolType::IRONWOOD => {
+                    account_balance.with_ironwood_balance_mut(update_balance_with_note)?;
+                }
                 _ => unimplemented!("Unknown pool type"),
             }
         }
 
         #[cfg(feature = "transparent-inputs")]
         for (account, balance) in account_balances.iter_mut() {
-            let transparent_balances =
-                self.get_transparent_balances(*account, target_height, confirmations_policy)?;
-            for (_, (_, bal)) in transparent_balances.into_iter() {
-                balance.with_unshielded_balance_mut(|b: &mut Balance| -> Result<(), Error> {
-                    *b = (*b + bal)?;
-                    Ok(())
-                })?;
+            for (outpoint, txo) in self.transparent_received_outputs.iter().filter(|(_, txo)| {
+                self.find_account_for_transparent_address(&txo.address)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|id| id == *account)
+            }) {
+                if self.utxo_is_spendable(outpoint, target_height, confirmations_policy)? {
+                    // tx_index == 0 identifies a coinbase transaction.
+                    let is_coinbase = self
+                        .tx_table
+                        .get(&txo.transaction_id)
+                        .and_then(|tx| tx.tx_index())
+                        .is_some_and(|idx| idx == 0);
+
+                    let value = txo.txout.value();
+                    if is_coinbase {
+                        balance
+                            .with_unshielded_coinbase_balance_mut(|b| b.add_spendable_value(value))?;
+                    } else {
+                        balance
+                            .with_unshielded_regular_balance_mut(|b| b.add_spendable_value(value))?;
+                    }
+                }
             }
         }
 
@@ -329,6 +349,8 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             next_sapling_subtree_index,
             #[cfg(feature = "orchard")]
             next_orchard_subtree_index,
+            #[cfg(feature = "orchard")]
+            todo!("ironwood_tree not yet implemented"),
         );
         Ok(Some(summary))
     }
