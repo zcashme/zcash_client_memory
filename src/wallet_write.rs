@@ -457,6 +457,12 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                     self.mark_orchard_note_spent(*spend.nf(), txid)?;
                 }
 
+                // Mark the Ironwood nullifiers of the spent notes as spent in the `ironwood_spends` map.
+                #[cfg(feature = "orchard")]
+                {
+                    todo!("mark Ironwood notes spent once they are inserted in put_blocks");
+                }
+
                 for output in transaction.sapling_outputs() {
                     // Insert the memo into the `memos` map.
                     let note_id = NoteId::new(
@@ -509,6 +515,8 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
             self.insert_sapling_nullifier_map(block.height(), block.sapling().nullifier_map())?;
             #[cfg(feature = "orchard")]
             self.insert_orchard_nullifier_map(block.height(), block.orchard().nullifier_map())?;
+            #[cfg(feature = "orchard")]
+            self.insert_ironwood_nullifier_map(block.height(), block.ironwood().nullifier_map())?;
             note_positions.extend(block.transactions().iter().flat_map(|wtx| {
                 let iter = wtx
                     .sapling_outputs()
@@ -1140,8 +1148,9 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
         {
             let detectable_via_scanning = d_tx.tx().sapling_bundle().is_some();
             #[cfg(feature = "orchard")]
-            let detectable_via_scanning =
-                detectable_via_scanning | d_tx.tx().orchard_bundle().is_some();
+            let detectable_via_scanning = detectable_via_scanning
+                | d_tx.tx().orchard_bundle().is_some()
+                | d_tx.tx().ironwood_bundle().is_some();
 
             if d_tx.mined_height().is_none() && !detectable_via_scanning {
                 self.transaction_data_request_queue
@@ -1362,6 +1371,28 @@ Instead derive the ufvk in the calling code and import it using `import_account_
 
                 #[cfg(not(feature = "orchard"))]
                 panic!("Sent a transaction with Orchard Actions without `orchard` enabled?");
+            }
+            // Mark ironwood notes as spent
+            if let Some(_bundle) = sent_tx.tx().ironwood_bundle() {
+                #[cfg(feature = "orchard")]
+                {
+                    detectable_via_scanning = true;
+                    for action in _bundle.actions() {
+                        match self
+                            .mark_ironwood_note_spent(*action.nullifier(), sent_tx.tx().txid())
+                        {
+                            Ok(()) => {}
+                            Err(Error::NoteNotFound) => {
+                                // This is expected as some of the actions will be new outputs we don't have notes for
+                                // The ones we do recognize will be marked as spent
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+
+                #[cfg(not(feature = "orchard"))]
+                panic!("Sent a transaction with Ironwood Actions without `orchard` enabled?");
             }
             // Mark transparent UTXOs as spent
             #[cfg(feature = "transparent-inputs")]

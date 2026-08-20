@@ -692,6 +692,42 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
         })
     }
 
+    #[cfg(feature = "orchard")]
+    fn get_ironwood_nullifiers(
+        &self,
+        query: NullifierQuery,
+    ) -> Result<Vec<(Self::AccountId, orchard::note::Nullifier)>, Self::Error> {
+        tracing::debug!("get_ironwood_nullifiers");
+        let nullifiers = self.received_notes.get_ironwood_nullifiers();
+        Ok(match query {
+            NullifierQuery::All => nullifiers
+                .map(|(account_id, _, nf)| (account_id, nf))
+                .collect(),
+            NullifierQuery::Unspent => nullifiers
+                .filter_map(|(account_id, _, nf)| {
+                    // find any tx we know of that spends this nullifier and if so require that it is unmined or expired
+                    if let Some((height, tx_index)) = self.nullifiers.get(&Nullifier::Ironwood(nf)) {
+                        if let Some(spending_tx) =
+                            self.tx_table.get_by_height_and_index(*height, *tx_index)
+                        {
+                            if matches!(spending_tx.status(), TransactionStatus::Mined(_))
+                                || spending_tx.expiry_height().is_none()
+                            {
+                                None
+                            } else {
+                                Some((account_id, nf))
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some((account_id, nf))
+                    }
+                })
+                .collect(),
+        })
+    }
+
     #[cfg(feature = "transparent-inputs")]
     fn get_transparent_receivers(
         &self,

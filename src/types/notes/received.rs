@@ -240,6 +240,19 @@ impl ReceivedNoteTable {
         })
     }
 
+    #[cfg(feature = "orchard")]
+    pub fn get_ironwood_nullifiers(
+        &self,
+    ) -> impl Iterator<Item = (AccountId, TxId, orchard::note::Nullifier)> + '_ {
+        self.0.iter().filter_map(|entry| {
+            if let Some(Nullifier::Ironwood(nf)) = entry.nullifier() {
+                Some((entry.account_id(), entry.txid(), *nf))
+            } else {
+                None
+            }
+        })
+    }
+
     pub fn insert_received_note(&mut self, note: ReceivedNote) {
         // ensure note_id is unique.
         // follow upsert rules to update the note if it already exists
@@ -269,6 +282,24 @@ impl ReceivedNoteTable {
         let nfs = nfs.collect::<Vec<_>>();
         for (nf, id) in self.0.iter().filter_map(|n| match (n.nf, n.account_id) {
             (Some(Nullifier::Orchard(nf)), account_id) => Some((nf, account_id)),
+            _ => None,
+        }) {
+            if nfs.contains(&&nf) {
+                acc.insert(id);
+            }
+        }
+        Ok(acc)
+    }
+
+    #[cfg(feature = "orchard")]
+    pub fn detect_ironwood_spending_accounts<'a>(
+        &self,
+        nfs: impl Iterator<Item = &'a orchard::note::Nullifier>,
+    ) -> Result<BTreeSet<AccountId>, Error> {
+        let mut acc = BTreeSet::new();
+        let nfs = nfs.collect::<Vec<_>>();
+        for (nf, id) in self.0.iter().filter_map(|n| match (n.nf, n.account_id) {
+            (Some(Nullifier::Ironwood(nf)), account_id) => Some((nf, account_id)),
             _ => None,
         }) {
             if nfs.contains(&&nf) {

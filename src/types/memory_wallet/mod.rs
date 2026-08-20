@@ -420,6 +420,15 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             )?,
         );
 
+        #[cfg(feature = "orchard")]
+        funding_accounts.extend(
+            self.received_notes.detect_ironwood_spending_accounts(
+                tx.ironwood_bundle()
+                    .iter()
+                    .flat_map(|bundle| bundle.actions().iter().map(|action| action.nullifier())),
+            )?,
+        );
+
         Ok(funding_accounts)
     }
 
@@ -764,6 +773,23 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         Ok(())
     }
 
+    #[cfg(feature = "orchard")]
+    pub(crate) fn mark_ironwood_note_spent(
+        &mut self,
+        nf: orchard::note::Nullifier,
+        txid: TxId,
+    ) -> Result<(), Error> {
+        let note_id = self
+            .received_notes
+            .iter()
+            .filter(|v| v.nullifier() == Some(&Nullifier::Ironwood(nf)))
+            .map(|v| v.note_id())
+            .next()
+            .ok_or(Error::NoteNotFound)?;
+        self.received_note_spends.insert_spend(note_id, txid);
+        Ok(())
+    }
+
     pub(crate) fn max_zip32_account_index(
         &self,
         seed_fingerprint: &SeedFingerprint,
@@ -845,6 +871,34 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             for nf in nullifiers.iter() {
                 self.nullifiers
                     .insert(block_height, u32::from(*tx_index), Nullifier::Orchard(*nf));
+            }
+            match self.tx_locator.entry((block_height, u32::from(*tx_index))) {
+                Entry::Occupied(x) => {
+                    if txid == x.get() {
+                        // This is a duplicate entry
+                        continue;
+                    } else {
+                        return Err(Error::ConflictingTxLocator);
+                    }
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(*txid);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "orchard")]
+    pub(crate) fn insert_ironwood_nullifier_map(
+        &mut self,
+        block_height: BlockHeight,
+        new_entries: &[(TxIndex, TxId, Vec<orchard::note::Nullifier>)],
+    ) -> Result<(), Error> {
+        for (tx_index, txid, nullifiers) in new_entries {
+            for nf in nullifiers.iter() {
+                self.nullifiers
+                    .insert(block_height, u32::from(*tx_index), Nullifier::Ironwood(*nf));
             }
             match self.tx_locator.entry((block_height, u32::from(*tx_index))) {
                 Entry::Occupied(x) => {

@@ -105,6 +105,10 @@ mod serialization {
                                     proto::PoolType::ShieldedOrchard => {
                                         zcash_protocol::ShieldedPool::Orchard
                                     }
+                                    #[cfg(feature = "orchard")]
+                                    proto::PoolType::ShieldedIronwood => {
+                                        todo!("deserialize Ironwood memo note IDs")
+                                    }
                                     _ => unreachable!(),
                                 },
                                 note_id.output_index as u16,
