@@ -414,6 +414,8 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                 sapling_commitment_tree_size,
                 #[cfg(feature = "orchard")]
                 orchard_commitment_tree_size,
+                #[cfg(feature = "orchard")]
+                ironwood_commitment_tree_size,
                 ..
             } = block;
             // TODO: Deal with legacy sapling trees
@@ -423,6 +425,8 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                 *sapling_commitment_tree_size,
                 #[cfg(feature = "orchard")]
                 *orchard_commitment_tree_size,
+                #[cfg(feature = "orchard")]
+                *ironwood_commitment_tree_size,
             )
         }))
     }

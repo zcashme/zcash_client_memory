@@ -40,7 +40,7 @@ use zip32::{Scope, fingerprint::SeedFingerprint};
 #[cfg(feature = "orchard")]
 use zcash_client_backend::{
     data_api::{IRONWOOD_SHARD_HEIGHT, ORCHARD_SHARD_HEIGHT},
-    wallet::WalletOrchardOutput,
+    wallet::{WalletIronwoodOutput, WalletOrchardOutput},
 };
 
 #[cfg(feature = "transparent-inputs")]
@@ -830,6 +830,20 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
     ) {
         self.received_notes
             .insert_received_note(ReceivedNote::from_wallet_orchard_output(note_id, output));
+        if let Some(spent_in) = spent_in {
+            self.received_note_spends.insert_spend(note_id, spent_in);
+        }
+    }
+
+    #[cfg(feature = "orchard")]
+    pub(crate) fn insert_received_ironwood_note(
+        &mut self,
+        note_id: NoteId,
+        output: &WalletIronwoodOutput<AccountId>,
+        spent_in: Option<TxId>,
+    ) {
+        self.received_notes
+            .insert_received_note(ReceivedNote::from_wallet_ironwood_output(note_id, output));
         if let Some(spent_in) = spent_in {
             self.received_note_spends.insert_spend(note_id, spent_in);
         }

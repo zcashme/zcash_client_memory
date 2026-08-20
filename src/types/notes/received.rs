@@ -18,7 +18,10 @@ use zcash_client_backend::{
 use crate::AccountId;
 
 #[cfg(feature = "orchard")]
-use {zcash_client_backend::wallet::WalletOrchardOutput, zcash_protocol::ShieldedPool::Orchard};
+use {
+    zcash_client_backend::wallet::{WalletIronwoodOutput, WalletOrchardOutput},
+    zcash_protocol::ShieldedPool::{Ironwood, Orchard},
+};
 
 use crate::{Nullifier, error::Error};
 
@@ -126,7 +129,7 @@ impl ReceivedNote {
                         txid,
                         match *pool {
                             orchard::ValuePool::Orchard => Orchard,
-                            orchard::ValuePool::Ironwood => zcash_protocol::ShieldedPool::Ironwood,
+                            orchard::ValuePool::Ironwood => Ironwood,
                         },
                         output.output_index() as u16,
                     ),
@@ -184,6 +187,28 @@ impl ReceivedNote {
             account_id: *output.account_id(),
             note: Note::Orchard { note: *note, pool: *pool },
             nf: output.nf().map(|nf| Nullifier::Orchard(*nf)),
+            is_change: output.is_change(),
+            memo: Memo::Empty,
+            commitment_tree_position: Some(output.note_commitment_tree_position()),
+            recipient_key_scope: output.recipient_key_scope(),
+            lock_expiry_height: None,
+            lock_owner: None,
+        }
+    }
+
+    #[cfg(feature = "orchard")]
+    pub fn from_wallet_ironwood_output(
+        note_id: NoteId,
+        output: &WalletIronwoodOutput<AccountId>,
+    ) -> Self {
+        let (note, pool) = output.note();
+        ReceivedNote {
+            note_id,
+            txid: *note_id.txid(),
+            output_index: output.index() as u32,
+            account_id: *output.account_id(),
+            note: Note::Orchard { note: *note, pool: *pool },
+            nf: output.nf().map(|nf| Nullifier::Ironwood(*nf)),
             is_change: output.is_change(),
             memo: Memo::Empty,
             commitment_tree_position: Some(output.note_commitment_tree_position()),

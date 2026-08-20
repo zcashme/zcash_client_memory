@@ -459,8 +459,8 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
 
                 // Mark the Ironwood nullifiers of the spent notes as spent in the `ironwood_spends` map.
                 #[cfg(feature = "orchard")]
-                {
-                    todo!("mark Ironwood notes spent once they are inserted in put_blocks");
+                for spend in transaction.ironwood_spends() {
+                    self.mark_ironwood_note_spent(*spend.nf(), txid)?;
                 }
 
                 for output in transaction.sapling_outputs() {
@@ -508,6 +508,29 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                     self.insert_received_orchard_note(note_id, output, spent_in)
                 }
 
+                #[cfg(feature = "orchard")]
+                for output in transaction.ironwood_outputs().iter() {
+                    // Insert the memo into the `memos` map.
+                    let note_id = NoteId::new(
+                        txid,
+                        ShieldedPool::Ironwood,
+                        u16::try_from(output.index())
+                            .expect("output indices are representable as u16"),
+                    );
+                    if let Ok(Some(memo)) = self.get_memo(note_id) {
+                        memos.insert(note_id, memo.encode());
+                    }
+                    // Check whether this note was spent in a later block range that
+                    // we previously scanned.
+                    let spent_in = output
+                        .nf()
+                        .and_then(|nf| self.nullifiers.get(&Nullifier::Ironwood(*nf)))
+                        .and_then(|(height, tx_idx)| self.tx_locator.get(*height, *tx_idx))
+                        .copied();
+
+                    self.insert_received_ironwood_note(note_id, output, spent_in)
+                }
+
                 transactions.insert(txid, transaction.clone());
             }
 
@@ -528,6 +551,12 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                         .iter()
                         .map(|out| (ShieldedPool::Orchard, out.note_commitment_tree_position())),
                 );
+                #[cfg(feature = "orchard")]
+                let iter = iter.chain(
+                    wtx.ironwood_outputs()
+                        .iter()
+                        .map(|out| (ShieldedPool::Ironwood, out.note_commitment_tree_position())),
+                );
 
                 iter
             }));
@@ -544,6 +573,10 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                 orchard_commitment_tree_size: Some(block.orchard().final_tree_size()),
                 #[cfg(feature = "orchard")]
                 orchard_action_count: Some(block.orchard().commitments().len().try_into().unwrap()),
+                #[cfg(feature = "orchard")]
+                ironwood_commitment_tree_size: Some(block.ironwood().final_tree_size()),
+                #[cfg(feature = "orchard")]
+                ironwood_action_count: Some(block.ironwood().commitments().len().try_into().unwrap()),
             };
 
             // Insert transaction metadata into the transaction table
