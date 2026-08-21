@@ -192,6 +192,10 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             .min())
     }
 
+    fn get_wallet_recover_until(&self) -> Result<Option<BlockHeight>, Self::Error> {
+        Ok(None)
+    }
+
     fn get_wallet_summary(
         &self,
         confirmations_policy: ConfirmationsPolicy,

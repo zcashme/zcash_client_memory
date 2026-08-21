@@ -1358,6 +1358,14 @@ Instead derive the ufvk in the calling code and import it using `import_account_
         todo!()
     }
 
+    fn prune_scan_queue_below(
+        &mut self,
+        _height: BlockHeight,
+        _retain_with_priority: Option<ScanPriority>,
+    ) -> Result<u64, Self::Error> {
+        todo!()
+    }
+
     #[cfg(feature = "transparent-key-import")]
     fn import_standalone_transparent_pubkey(
         &mut self,
