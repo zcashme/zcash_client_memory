@@ -122,7 +122,7 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
             #[cfg(not(feature = "orchard"))]
             ShieldedPool::Orchard | ShieldedPool::Ironwood => false,
             #[cfg(feature = "orchard")]
-            ShieldedPool::Ironwood => todo!(),
+            ShieldedPool::Ironwood => self.ironwood_tree.store().get_checkpoint(&height)?.is_some(),
         })
     }
 
@@ -360,7 +360,24 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
         #[cfg(not(feature = "orchard"))]
         let orchard_pool_meta = None;
 
-        Ok(AccountMeta::new(sapling_pool_meta, orchard_pool_meta))
+        #[cfg(feature = "orchard")]
+        let ironwood_pool_meta = self.spendable_notes_meta(
+            ShieldedPool::Ironwood,
+            account_id,
+            selector,
+            target_height,
+            confirmations_policy,
+            exclude,
+            lock_filter,
+        )?;
+        #[cfg(not(feature = "orchard"))]
+        let ironwood_pool_meta = None;
+
+        Ok(AccountMeta::new(
+            sapling_pool_meta,
+            orchard_pool_meta,
+            ironwood_pool_meta,
+        ))
     }
 }
 
