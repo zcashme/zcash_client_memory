@@ -33,6 +33,8 @@ message ReceivedNote {
   bytes memo = 8;
   optional uint64 commitment_tree_position = 9;
   optional Scope recipient_key_scope = 10;
+  optional uint32 lock_expiry_height = 11;
+  optional bytes lock_owner = 12;
 }
 
 enum Scope {

@@ -8,11 +8,11 @@ use std::{
 use zip32::Scope;
 
 use zcash_primitives::transaction::TxId;
-use zcash_protocol::{PoolType, ShieldedPool::Sapling, memo::Memo};
+use zcash_protocol::{PoolType, ShieldedPool::Sapling, consensus::BlockHeight, memo::Memo};
 
 use zcash_client_backend::{
     data_api::{ReceivedNotes, SentTransactionOutput},
-    wallet::{Note, NoteId, Recipient, WalletSaplingOutput},
+    wallet::{LockOwner, Note, NoteId, Recipient, WalletSaplingOutput},
 };
 
 use crate::AccountId;
@@ -66,6 +66,8 @@ pub(crate) struct ReceivedNote {
     pub(crate) memo: Memo,
     pub(crate) commitment_tree_position: Option<Position>,
     pub(crate) recipient_key_scope: Option<Scope>,
+    pub(crate) lock_expiry_height: Option<BlockHeight>,
+    pub(crate) lock_owner: Option<LockOwner>,
 }
 impl ReceivedNote {
     pub fn pool(&self) -> PoolType {
@@ -115,6 +117,8 @@ impl ReceivedNote {
                         .expect("expected a memo for a non-transparent output"),
                     commitment_tree_position: None,
                     recipient_key_scope: Some(Scope::Internal),
+                    lock_expiry_height: None,
+                    lock_owner: None,
                 }),
                 #[cfg(feature = "orchard")]
                 Note::Orchard { note, pool } => Ok(ReceivedNote {
@@ -139,6 +143,8 @@ impl ReceivedNote {
                         .expect("expected a memo for a non-transparent output"),
                     commitment_tree_position: None,
                     recipient_key_scope: Some(Scope::Internal),
+                    lock_expiry_height: None,
+                    lock_owner: None,
                 }),
             },
             _ => Err(Error::Other(
@@ -161,6 +167,8 @@ impl ReceivedNote {
             memo: Memo::Empty,
             commitment_tree_position: Some(output.note_commitment_tree_position()),
             recipient_key_scope: output.recipient_key_scope(),
+            lock_expiry_height: None,
+            lock_owner: None,
         }
     }
     #[cfg(feature = "orchard")]
@@ -180,6 +188,8 @@ impl ReceivedNote {
             memo: Memo::Empty,
             commitment_tree_position: Some(output.note_commitment_tree_position()),
             recipient_key_scope: output.recipient_key_scope(),
+            lock_expiry_height: None,
+            lock_owner: None,
         }
     }
 }
@@ -408,6 +418,8 @@ mod serialization {
                     Some(Scope::External) => Some(proto::Scope::External as i32),
                     None => None,
                 },
+                lock_expiry_height: value.lock_expiry_height.map(|h| h.into()),
+                lock_owner: value.lock_owner.map(|o| o.as_bytes().to_vec()),
             }
         }
     }
@@ -431,7 +443,90 @@ mod serialization {
                     Some(1) => Some(Scope::External),
                     _ => None,
                 },
+                lock_expiry_height: value.lock_expiry_height.map(|h| h.into()),
+                lock_owner: value
+                    .lock_owner
+                    .map(|o| {
+                        o.as_slice()
+                            .try_into()
+                            .map(LockOwner::new)
+                            .map_err(|_| {
+                                Error::CorruptedData(format!(
+                                    "lock_owner must be 32 bytes, got {}",
+                                    o.len()
+                                ))
+                            })
+                    })
+                    .transpose()?,
             })
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::{AccountId, error::Error};
+        use zcash_client_backend::wallet::LockOwner;
+        use zcash_protocol::consensus::BlockHeight;
+
+        fn test_received_note() -> ReceivedNote {
+            ReceivedNote {
+                note_id: NoteId::new(
+                    zcash_primitives::transaction::TxId::from_bytes([0; 32]),
+                    zcash_protocol::ShieldedPool::Sapling,
+                    0,
+                ),
+                txid: zcash_primitives::transaction::TxId::from_bytes([0; 32]),
+                output_index: 0,
+                account_id: AccountId::from(0),
+                note: Note::Sapling(sapling::note::Note::from_parts(
+                    sapling::PaymentAddress::from_bytes(&[
+                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30,
+                        0x8e, 0x11, 0x9d, 0x72, 0x99, 0x2b, 0x56, 0x0d, 0x26, 0x50, 0xff, 0xe0,
+                        0xbe, 0x7f, 0x35, 0x42, 0xfd, 0x97, 0x00, 0x3c, 0xb7, 0xcc, 0x3a, 0xbf,
+                        0xf8, 0x1a, 0x7f, 0x90, 0x37, 0xf3, 0xea,
+                    ])
+                    .unwrap(),
+                    sapling::value::NoteValue::from_raw(1000),
+                    sapling::Rseed::AfterZip212([0; 32]),
+                )),
+                nf: None,
+                is_change: false,
+                memo: zcash_protocol::memo::Memo::Empty,
+                commitment_tree_position: None,
+                recipient_key_scope: Some(zip32::Scope::Internal),
+                lock_expiry_height: Some(BlockHeight::from(100)),
+                lock_owner: Some(LockOwner::new([1; 32])),
+            }
+        }
+
+        #[test]
+        fn lock_fields_roundtrip() {
+            let note = test_received_note();
+            let proto: proto::ReceivedNote = note.clone().into();
+            let recovered: ReceivedNote = proto.try_into().unwrap();
+            assert_eq!(note, recovered);
+        }
+
+        #[test]
+        fn lock_fields_preserved_when_none() {
+            let mut note = test_received_note();
+            note.lock_expiry_height = None;
+            note.lock_owner = None;
+            let proto: proto::ReceivedNote = note.clone().into();
+            let recovered: ReceivedNote = proto.try_into().unwrap();
+            assert_eq!(note, recovered);
+        }
+
+        #[test]
+        fn malformed_lock_owner_deserialization_fails() {
+            let mut proto: proto::ReceivedNote = test_received_note().into();
+            proto.lock_owner = Some(vec![0; 31]);
+            assert!(matches!(
+                ReceivedNote::try_from(proto),
+                Err(Error::CorruptedData(_))
+            ));
+        }
+    }
 }
+

@@ -8,7 +8,7 @@ use ::transparent::{
     bundle::{OutPoint, TxOut},
 };
 use transparent::keys::TransparentKeyScope;
-use zcash_client_backend::wallet::WalletTransparentOutput;
+use zcash_client_backend::wallet::{LockOwner, WalletTransparentOutput};
 
 use zcash_protocol::{TxId, consensus::BlockHeight};
 
@@ -99,6 +99,8 @@ pub struct ReceivedTransparentOutput {
     /// determine when the TXO is no longer a part of the UTXO set, in the case that the
     /// transaction that spends it is not detected by the wallet.
     pub(crate) max_observed_unspent_height: Option<BlockHeight>,
+    pub(crate) lock_expiry_height: Option<BlockHeight>,
+    pub(crate) lock_owner: Option<LockOwner>,
 }
 
 impl ReceivedTransparentOutput {
@@ -117,6 +119,8 @@ impl ReceivedTransparentOutput {
             key_scope,
             txout,
             max_observed_unspent_height: Some(max_observed_unspent_height),
+            lock_expiry_height: None,
+            lock_owner: None,
         }
     }
 
@@ -180,6 +184,8 @@ mod serialization {
                 address: output.address.encode(&EncodingParams),
                 txout: Some(output.txout.into()),
                 max_observed_unspent_height: output.max_observed_unspent_height.map(|h| h.into()),
+                lock_expiry_height: output.lock_expiry_height.map(|h| h.into()),
+                lock_owner: output.lock_owner.map(|o| o.as_bytes().to_vec()),
             }
         }
     }
@@ -199,6 +205,21 @@ mod serialization {
                 key_scope: TransparentKeyScope::custom(u32::MAX).expect("FIXME"),
                 txout: read_optional!(output, txout)?.try_into()?,
                 max_observed_unspent_height: output.max_observed_unspent_height.map(|h| h.into()),
+                lock_expiry_height: output.lock_expiry_height.map(|h| h.into()),
+                lock_owner: output
+                    .lock_owner
+                    .map(|o| {
+                        o.as_slice()
+                            .try_into()
+                            .map(LockOwner::new)
+                            .map_err(|_| {
+                                crate::Error::CorruptedData(format!(
+                                    "lock_owner must be 32 bytes, got {}",
+                                    o.len()
+                                ))
+                            })
+                    })
+                    .transpose()?,
             })
         }
     }

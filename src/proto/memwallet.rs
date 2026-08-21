@@ -168,6 +168,10 @@ pub struct ReceivedNote {
     pub commitment_tree_position: ::core::option::Option<u64>,
     #[prost(enumeration = "Scope", optional, tag = "10")]
     pub recipient_key_scope: ::core::option::Option<i32>,
+    #[prost(uint32, optional, tag = "11")]
+    pub lock_expiry_height: ::core::option::Option<u32>,
+    #[prost(bytes = "vec", optional, tag = "12")]
+    pub lock_owner: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SentNote {
@@ -359,6 +363,10 @@ pub struct ReceivedTransparentOutput {
     pub txout: ::core::option::Option<TxOut>,
     #[prost(uint32, optional, tag = "5")]
     pub max_observed_unspent_height: ::core::option::Option<u32>,
+    #[prost(uint32, optional, tag = "6")]
+    pub lock_expiry_height: ::core::option::Option<u32>,
+    #[prost(bytes = "vec", optional, tag = "7")]
+    pub lock_owner: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TxOut {
