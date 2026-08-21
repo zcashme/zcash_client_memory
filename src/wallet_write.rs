@@ -45,8 +45,10 @@ use crate::{
 
 #[cfg(feature = "orchard")]
 use {
-    shardtree::error::ShardTreeError, std::collections::BTreeMap,
-    zcash_client_backend::data_api::ORCHARD_SHARD_HEIGHT, zcash_protocol::ShieldedPool::Orchard,
+    shardtree::error::ShardTreeError,
+    std::collections::BTreeMap,
+    zcash_client_backend::data_api::{IRONWOOD_SHARD_HEIGHT, ORCHARD_SHARD_HEIGHT},
+    zcash_protocol::ShieldedPool::Orchard,
 };
 
 #[cfg(feature = "transparent-inputs")]
@@ -410,6 +412,8 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
             sapling_start_position: Position,
             #[cfg(feature = "orchard")]
             orchard_start_position: Position,
+            #[cfg(feature = "orchard")]
+            ironwood_start_position: Position,
         }
         let start_positions = blocks.first().map(|block| BlockPositions {
             height: block.height(),
@@ -422,11 +426,18 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                 u64::from(block.orchard().final_tree_size())
                     - u64::try_from(block.orchard().commitments().len()).unwrap(),
             ),
+            #[cfg(feature = "orchard")]
+            ironwood_start_position: Position::from(
+                u64::from(block.ironwood().final_tree_size())
+                    - u64::try_from(block.ironwood().commitments().len()).unwrap(),
+            ),
         });
 
         let mut sapling_commitments = vec![];
         #[cfg(feature = "orchard")]
         let mut orchard_commitments = vec![];
+        #[cfg(feature = "orchard")]
+        let mut ironwood_commitments = vec![];
         let mut note_positions = vec![];
         for block in blocks.into_iter() {
             let mut transactions = HashMap::new();
@@ -592,6 +603,8 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
             sapling_commitments.extend(block_commitments.sapling.into_iter().map(Some));
             #[cfg(feature = "orchard")]
             orchard_commitments.extend(block_commitments.orchard.into_iter().map(Some));
+            #[cfg(feature = "orchard")]
+            ironwood_commitments.extend(block_commitments.ironwood.into_iter().map(Some));
         }
 
         if let Some((start_positions, last_scanned_height)) =
@@ -632,6 +645,23 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                 .map(|res| (res.subtree, res.checkpoints))
                 .collect::<Vec<_>>();
 
+            #[cfg(feature = "orchard")]
+            let ironwood_subtrees = ironwood_commitments
+                .par_chunks_mut(CHUNK_SIZE)
+                .enumerate()
+                .filter_map(|(i, chunk)| {
+                    let start = start_positions.ironwood_start_position + (i * CHUNK_SIZE) as u64;
+                    let end = start + chunk.len() as u64;
+
+                    shardtree::LocatedTree::from_iter(
+                        start..end,
+                        IRONWOOD_SHARD_HEIGHT.into(),
+                        chunk.iter_mut().map(|n| n.take().expect("always Some")),
+                    )
+                })
+                .map(|res| (res.subtree, res.checkpoints))
+                .collect::<Vec<_>>();
+
             // Collect the complete set of Sapling checkpoints
             #[cfg(feature = "orchard")]
             let sapling_checkpoint_positions: BTreeMap<BlockHeight, Position> = sapling_subtrees
@@ -648,18 +678,36 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                 .collect();
 
             #[cfg(feature = "orchard")]
-            let (missing_sapling_checkpoints, missing_orchard_checkpoints) = (
-                ensure_checkpoints(
-                    orchard_checkpoint_positions.keys(),
-                    &sapling_checkpoint_positions,
-                    from_state.final_sapling_tree(),
-                ),
-                ensure_checkpoints(
-                    sapling_checkpoint_positions.keys(),
-                    &orchard_checkpoint_positions,
-                    from_state.final_orchard_tree(),
-                ),
-            );
+            let ironwood_checkpoint_positions: BTreeMap<BlockHeight, Position> = ironwood_subtrees
+                .iter()
+                .flat_map(|(_, checkpoints)| checkpoints.iter())
+                .map(|(k, v)| (*k, *v))
+                .collect();
+
+            #[cfg(feature = "orchard")]
+            let (missing_sapling_checkpoints, missing_orchard_checkpoints, missing_ironwood_checkpoints) = {
+                let sapling_set: BTreeSet<BlockHeight> = sapling_checkpoint_positions.keys().copied().collect();
+                let orchard_set: BTreeSet<BlockHeight> = orchard_checkpoint_positions.keys().copied().collect();
+                let ironwood_set: BTreeSet<BlockHeight> = ironwood_checkpoint_positions.keys().copied().collect();
+
+                (
+                    ensure_checkpoints(
+                        orchard_set.union(&ironwood_set),
+                        &sapling_checkpoint_positions,
+                        from_state.final_sapling_tree(),
+                    ),
+                    ensure_checkpoints(
+                        sapling_set.union(&ironwood_set),
+                        &orchard_checkpoint_positions,
+                        from_state.final_orchard_tree(),
+                    ),
+                    ensure_checkpoints(
+                        sapling_set.union(&orchard_set),
+                        &ironwood_checkpoint_positions,
+                        from_state.final_ironwood_tree(),
+                    ),
+                )
+            };
 
             // Update the Sapling note commitment tree with all newly read note commitments
             {
@@ -677,7 +725,7 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                         sapling_tree.insert_tree(tree, checkpoints)?;
                     }
 
-                    // Ensure we have a Sapling checkpoint for each checkpointed Orchard block height.
+                    // Ensure we have a Sapling checkpoint for each checkpointed Orchard or Ironwood block height.
                     // We skip all checkpoints below the minimum retained checkpoint in the
                     // Sapling tree, because branches below this height may be pruned.
                     #[cfg(feature = "orchard")]
@@ -719,7 +767,7 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                         orchard_tree.insert_tree(tree, checkpoints)?;
                     }
 
-                    // Ensure we have an Orchard checkpoint for each checkpointed Sapling block height.
+                    // Ensure we have an Orchard checkpoint for each checkpointed Sapling or Ironwood block height.
                     // We skip all checkpoints below the minimum retained checkpoint in the
                     // Orchard tree, because branches below this height may be pruned.
                     {
@@ -732,6 +780,46 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                         for (height, checkpoint) in &missing_orchard_checkpoints {
                             if *height > min_checkpoint_height {
                                 orchard_tree
+                                    .store_mut()
+                                    .add_checkpoint(*height, checkpoint.clone())
+                                    .map_err(ShardTreeError::Storage)?;
+                            }
+                        }
+                    }
+                    Ok(())
+                })?;
+            }
+
+            // Update the Ironwood note commitment tree with all newly read note commitments
+            #[cfg(feature = "orchard")]
+            {
+                let mut ironwood_subtrees = ironwood_subtrees.into_iter();
+                self.with_ironwood_tree_mut::<_, _, <Self as WalletRead>::Error>(|ironwood_tree| {
+                    ironwood_tree.insert_frontier(
+                        from_state.final_ironwood_tree().clone(),
+                        Retention::Checkpoint {
+                            id: from_state.block_height(),
+                            marking: Marking::Reference,
+                        },
+                    )?;
+
+                    for (tree, checkpoints) in &mut ironwood_subtrees {
+                        ironwood_tree.insert_tree(tree, checkpoints)?;
+                    }
+
+                    // Ensure we have an Ironwood checkpoint for each checkpointed Sapling/Orchard block height.
+                    // We skip all checkpoints below the minimum retained checkpoint in the
+                    // Ironwood tree, because branches below this height may be pruned.
+                    {
+                        let min_checkpoint_height = ironwood_tree
+                            .store()
+                            .min_checkpoint_id()
+                            .map_err(ShardTreeError::Storage)?
+                            .expect("At least one checkpoint was inserted (by insert_frontier)");
+
+                        for (height, checkpoint) in &missing_ironwood_checkpoints {
+                            if *height > min_checkpoint_height {
+                                ironwood_tree
                                     .store_mut()
                                     .add_checkpoint(*height, checkpoint.clone())
                                     .map_err(ShardTreeError::Storage)?;
@@ -1205,7 +1293,7 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
     /// This should only be executed inside a transactional context.
     fn truncate_to_height(&mut self, max_height: BlockHeight) -> Result<BlockHeight, <Self as WalletRead>::Error> {
         let truncation_height = {
-            // This is the intersection of all the checkpoint heights from the sapling and orchard tree.
+            // This is the intersection of all the checkpoint heights from the sapling, orchard, and ironwood trees.
             let mut checkpoint_heights = BTreeSet::new();
             self.sapling_tree.store().for_each_checkpoint(
                 self.sapling_tree.store().checkpoint_count()?,
@@ -1225,8 +1313,21 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                     },
                 )?;
 
+                let mut ironwood_checkpoint_heights = BTreeSet::new();
+                self.ironwood_tree.store().for_each_checkpoint(
+                    self.ironwood_tree.store().checkpoint_count()?,
+                    |height, _| {
+                        ironwood_checkpoint_heights.insert(u32::from(*height));
+                        Ok(())
+                    },
+                )?;
+
                 checkpoint_heights = checkpoint_heights
                     .intersection(&orchard_checkpoint_heights)
+                    .copied()
+                    .collect();
+                checkpoint_heights = checkpoint_heights
+                    .intersection(&ironwood_checkpoint_heights)
                     .copied()
                     .collect();
             }
@@ -1297,9 +1398,9 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                 tree.truncate_to_checkpoint(&truncation_height).map(|_| ())
             })?;
             #[cfg(feature = "orchard")]
-            {
-                todo!("truncate ironwood tree once put_blocks advances it");
-            }
+            self.with_ironwood_tree_mut(|tree| {
+                tree.truncate_to_checkpoint(&truncation_height).map(|_| ())
+            })?;
 
             // Do not delete sent notes; this can contain data that is not recoverable
             // from the chain. Wallets must continue to operate correctly in the
