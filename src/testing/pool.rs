@@ -112,6 +112,13 @@ pub(crate) fn zip317_spend<T: ShieldedPoolTester>() {
     )
 }
 
+pub(crate) fn single_note_selection_honors_lock_tier_preference<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::locking::single_note_selection_honors_lock_tier_preference::<T>(
+        TestMemDbFactory::new(),
+        MemBlockCache::new(),
+    )
+}
+
 #[cfg(feature = "transparent-inputs")]
 pub(crate) fn shield_transparent<T: ShieldedPoolTester>() {
     zcash_client_backend::data_api::testing::pool::shield_transparent::<T, _>(

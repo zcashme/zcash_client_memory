@@ -53,6 +53,11 @@ fn spend_fails_on_locked_notes() {
 }
 
 #[test]
+fn single_note_selection_honors_lock_tier_preference() {
+    testing::pool::single_note_selection_honors_lock_tier_preference::<SaplingPoolTester>()
+}
+
+#[test]
 #[ignore] // FIXME
 fn ovk_policy_prevents_recovery_from_chain() {
     testing::pool::ovk_policy_prevents_recovery_from_chain::<SaplingPoolTester>()
