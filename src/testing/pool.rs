@@ -9,6 +9,10 @@ mod sapling;
 #[cfg(feature = "orchard")]
 mod orchard;
 
+#[cfg(test)]
+#[cfg(feature = "orchard")]
+mod ironwood;
+
 pub(crate) fn send_single_step_proposed_transfer<T: ShieldedPoolTester>() {
     zcash_client_backend::data_api::testing::pool::send_single_step_proposed_transfer::<T>(
         TestMemDbFactory::new(),
