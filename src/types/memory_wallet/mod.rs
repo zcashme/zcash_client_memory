@@ -25,13 +25,14 @@ use zcash_client_backend::{
         TransactionStatus, WalletRead,
         scanning::{ScanPriority, ScanRange},
         wallet::{ConfirmationsPolicy, TargetHeight},
+        wallet::input_selection::LockFilter,
     },
-    wallet::{NoteId, WalletSaplingOutput},
+    wallet::{LockOwner, NoteId, OutputRef, WalletSaplingOutput},
 };
 use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_primitives::transaction::Transaction;
 use zcash_protocol::{
-    ShieldedPool, TxId,
+    PoolType, ShieldedPool, TxId,
     consensus::{self, BlockHeight, NetworkUpgrade, TxIndex},
 };
 use zip32::{Scope, fingerprint::SeedFingerprint};
@@ -468,6 +469,7 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         target_height: TargetHeight,
         confirmations_policy: ConfirmationsPolicy,
         exclude: &[<MemoryWalletDb<P> as InputSource>::NoteRef],
+        lock_filter: LockFilter<'_>,
     ) -> Result<bool, Error> {
         let note_account = self
             .get_account(note.account_id())?
@@ -512,7 +514,158 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
                 }
                 None => false,
             }
-            && !exclude.contains(&note.note_id()))
+            && !exclude.contains(&note.note_id())
+            && self.is_output_eligible_under_lock_filter(
+                &OutputRef::from(note.note_id),
+                target_height,
+                lock_filter))
+    }
+    /// Returns whether the output referenced by `output` is currently locked as of `target_height`.
+    pub(crate) fn is_output_locked_at(
+        &self,
+        output: &OutputRef,
+        target_height: TargetHeight,
+    ) -> bool {
+        match output.pool() {
+            PoolType::Shielded(pool) => {
+                let note_id = NoteId::new(*output.txid(), pool, output.output_index() as u16);
+                self.get_received_note(note_id)
+                    .and_then(|note| note.lock_expiry_height)
+                    .is_some_and(|h| h >= BlockHeight::from(target_height))
+            }
+            PoolType::Transparent => {
+                let outpoint = OutPoint::new((*output.txid()).into(), output.output_index());
+                self.transparent_received_outputs
+                    .get(&outpoint)
+                    .and_then(|txo| txo.lock_expiry_height)
+                    .is_some_and(|h| h >= BlockHeight::from(target_height))
+            }
+        }
+    }
+
+    /// Returns the lock owner for the given output if it is currently locked.
+    pub(crate) fn output_lock_owner_at(
+        &self,
+        output: &OutputRef,
+        target_height: TargetHeight,
+    ) -> Option<LockOwner> {
+        match output.pool() {
+            PoolType::Shielded(pool) => {
+                let note_id = NoteId::new(*output.txid(), pool, output.output_index() as u16);
+                self.get_received_note(note_id)
+                    .and_then(|note| {
+                        let expiry = note.lock_expiry_height?;
+                        if expiry >= BlockHeight::from(target_height) {
+                            note.lock_owner
+                        } else {
+                            None
+                        }
+                    })
+            }
+            PoolType::Transparent => {
+                let outpoint = OutPoint::new((*output.txid()).into(), output.output_index());
+                self.transparent_received_outputs.get(&outpoint).and_then(|txo| {
+                    let expiry = txo.lock_expiry_height?;
+                    if expiry >= BlockHeight::from(target_height) {
+                        txo.lock_owner
+                    } else {
+                        None
+                    }
+                })
+            }
+        }
+    }
+
+    /// Returns whether `output` is eligible for selection under `lock_filter` as of
+    /// `target_height`.
+    pub(crate) fn is_output_eligible_under_lock_filter(
+        &self,
+        output: &OutputRef,
+        target_height: TargetHeight,
+        lock_filter: LockFilter<'_>,
+    ) -> bool {
+        match lock_filter {
+            LockFilter::Unfiltered => true,
+            LockFilter::Policy(policy) => {
+                !self.is_output_locked_at(output, target_height)
+                    || self.output_lock_owner_at(output, target_height)
+                        .is_some_and(|owner| policy.overridable_owners().contains(&owner))
+            }
+        }
+    }
+
+    /// Returns the account that owns the output referenced by `output`, if known.
+    pub(crate) fn account_for_output_ref(
+        &self,
+        output: &OutputRef,
+    ) -> Result<Option<AccountId>, Error> {
+        match output.pool() {
+            PoolType::Shielded(pool) => {
+                let note_id = NoteId::new(*output.txid(), pool, output.output_index() as u16);
+                Ok(self.get_received_note(note_id).map(|note| note.account_id()))
+            }
+            #[cfg(feature = "transparent-inputs")]
+            PoolType::Transparent => {
+                let outpoint = OutPoint::new((*output.txid()).into(), output.output_index());
+                Ok(self.transparent_received_outputs.get(&outpoint).map(|txo| txo.account_id))
+            }
+            #[cfg(not(feature = "transparent-inputs"))]
+            PoolType::Transparent => Ok(None),
+        }
+    }
+
+    /// Returns whether the lock on `output` may be acquired by `owner` as of the chain tip.
+    pub(crate) fn is_output_lockable_by(
+        &self,
+        output: &OutputRef,
+        owner: LockOwner,
+    ) -> Result<bool, Error> {
+        let chain_tip = self.chain_height()?;
+        let (current_expiry, current_owner) = match output.pool() {
+            PoolType::Shielded(pool) => {
+                let note_id = NoteId::new(*output.txid(), pool, output.output_index() as u16);
+                match self.get_received_note(note_id) {
+                    Some(note) => (note.lock_expiry_height, note.lock_owner),
+                    None => return Ok(false),
+                }
+            }
+            PoolType::Transparent => {
+                let outpoint = OutPoint::new((*output.txid()).into(), output.output_index());
+                match self.transparent_received_outputs.get(&outpoint) {
+                    Some(txo) => (txo.lock_expiry_height, txo.lock_owner),
+                    None => return Ok(false),
+                }
+            }
+        };
+        Ok(current_expiry.is_none()
+            || current_expiry.is_some_and(|h| chain_tip.is_some_and(|tip| h <= tip))
+            || current_owner == Some(owner))
+    }
+
+    /// Unlocks all outputs that have been recorded as spent by the given transaction.
+    ///
+    /// This is called after marking notes and UTXOs as spent in `store_transactions_to_be_sent`,
+    /// since the spend records now prevent them from being selected by subsequent proposals.
+    pub(crate) fn unlock_outputs_spent_in(&mut self, txid: TxId) {
+        for (note_id, spending_txid) in self.received_note_spends.iter() {
+            if *spending_txid == txid {
+                if let Some(note) =
+                    self.received_notes.0.iter_mut().find(|n| n.note_id == *note_id)
+                {
+                    note.lock_expiry_height = None;
+                    note.lock_owner = None;
+                }
+            }
+        }
+        #[cfg(feature = "transparent-inputs")]
+        for (outpoint, spending_txid) in self.transparent_received_output_spends.iter() {
+            if *spending_txid == txid {
+                if let Some(txo) = self.transparent_received_outputs.get_mut(outpoint) {
+                    txo.lock_expiry_height = None;
+                    txo.lock_owner = None;
+                }
+            }
+        }
     }
 
     /// To be pending a note must be:
