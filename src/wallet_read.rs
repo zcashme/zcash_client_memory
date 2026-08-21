@@ -12,6 +12,7 @@ use zcash_client_backend::data_api::{
     error::FindAccountForAddressError,
     scanning::ScanRange,
     wallet::{ConfirmationsPolicy, TargetHeight},
+    wallet::input_selection::LockFilter,
 };
 #[cfg(feature = "transparent-inputs")]
 use zcash_client_backend::data_api::{TransparentBalances, TransparentKeyOrigin};
@@ -21,7 +22,7 @@ use zcash_client_backend::{
         TransactionDataRequest, TransactionStatus, scanning::ScanPriority,
     },
     keys::{UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey},
-    wallet::NoteId,
+    wallet::{NoteId, OutputRef},
 };
 use zcash_keys::{address::UnifiedAddress, keys::UnifiedIncomingViewingKey};
 use zcash_primitives::{
@@ -252,6 +253,7 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
 
             // Given a note update the balance for the account
             // This includes determining if it is change, spendable, etc
+            let is_locked = self.is_output_locked_at(&OutputRef::from(note.note_id), target_height);
             let update_balance_with_note = |b: &mut Balance| -> Result<(), Error> {
                 match (
                     self.note_is_pending(note, target_height, confirmations_policy)?,
@@ -259,6 +261,7 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                 ) {
                     (true, true) => b.add_pending_change_value(note.note.value()),
                     (true, false) => b.add_pending_spendable_value(note.note.value()),
+                    (false, _) if is_locked => b.add_locked_value(note.note.value()),
                     (false, _) => b.add_spendable_value(note.note.value()),
                 }?;
                 Ok(())
@@ -287,8 +290,19 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                     .flatten()
                     .is_some_and(|id| id == *account)
             }) {
-                if self.utxo_is_spendable(outpoint, target_height, confirmations_policy)? {
-                    // tx_index == 0 identifies a coinbase transaction.
+                let output_ref = OutputRef::new(
+                    TxId::from_bytes(*outpoint.hash()),
+                    PoolType::Transparent,
+                    outpoint.n(),
+                );
+                let is_spendable = self.utxo_is_spendable(
+                    outpoint,
+                    target_height,
+                    confirmations_policy,
+                    LockFilter::Unfiltered,
+                )?;
+                let is_locked = self.is_output_locked_at(&output_ref, target_height);
+                if is_spendable {
                     let is_coinbase = self
                         .tx_table
                         .get(&txo.transaction_id)
@@ -297,11 +311,15 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
 
                     let value = txo.txout.value();
                     if is_coinbase {
-                        balance
-                            .with_unshielded_coinbase_balance_mut(|b| b.add_spendable_value(value))?;
+                        if is_locked {
+                            balance.with_unshielded_coinbase_balance_mut(|b| b.add_locked_value(value))?;
+                        } else {
+                            balance.with_unshielded_coinbase_balance_mut(|b| b.add_spendable_value(value))?;
+                        }
+                    } else if is_locked {
+                        balance.with_unshielded_regular_balance_mut(|b| b.add_locked_value(value))?;
                     } else {
-                        balance
-                            .with_unshielded_regular_balance_mut(|b| b.add_spendable_value(value))?;
+                        balance.with_unshielded_regular_balance_mut(|b| b.add_spendable_value(value))?;
                     }
                 }
             }
@@ -732,7 +750,19 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                 false
             }
         }) {
-            if self.utxo_is_spendable(outpoint, target_height, confirmations_policy)? {
+            let output_ref = OutputRef::new(
+                TxId::from_bytes(*outpoint.hash()),
+                PoolType::Transparent,
+                outpoint.n(),
+            );
+            let is_spendable = self.utxo_is_spendable(
+                outpoint,
+                target_height,
+                confirmations_policy,
+                LockFilter::Unfiltered,
+            )?;
+            let is_locked = self.is_output_locked_at(&output_ref, target_height);
+            if is_spendable {
                 let address = txo.address;
                 let key_origin = TransparentKeyOrigin::Derived {
                     scope: txo.key_scope,
@@ -741,7 +771,11 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                     .entry(address)
                     .or_insert((key_origin, Balance::ZERO));
 
-                entry.1.add_spendable_value(txo.txout.value())?;
+                if is_locked {
+                    entry.1.add_locked_value(txo.txout.value())?;
+                } else {
+                    entry.1.add_spendable_value(txo.txout.value())?;
+                }
             }
         }
 

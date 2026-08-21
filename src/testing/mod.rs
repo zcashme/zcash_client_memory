@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::convert::{Infallible, identity};
 use std::fmt::Debug;
 
@@ -314,17 +315,21 @@ where
                 ]
                 .into_iter()
                 .find_map(identity)
-                .ok_or(Error::Other(
-                    format!("Account id could not be found for tx: {}", txid).to_string(),
-                ))?;
+                .ok_or(Error::Other(format!("Account id could not be found for tx: {txid}")))?;
 
+                // Balance gained is the total value of notes/outputs received by the wallet in
+                // this transaction, including change.
                 let balance_gained: u64 = received_notes
                     .iter()
                     .map(|note| note.note.value().into_u64())
                     .sum::<u64>()
                     + sent_txo_value;
 
-                let balance_lost: u64 = self // includes change
+                // Balance lost is the total value of notes/outputs spent by the wallet in this
+                // transaction. A change note is created by this wallet, so it is recorded in
+                // sent_notes and counts as spent; it is also recorded in received_notes, so it
+                // nets to zero in account_value_delta but appears in total_spent/total_received.
+                let balance_lost: u64 = self
                     .sent_notes
                     .iter()
                     .filter(|(note_id, _)| note_id.txid() == txid)
@@ -332,17 +337,46 @@ where
                     .sum::<u64>()
                     + tx.fee().map(u64::from).unwrap_or(0);
 
-                let is_shielding = {
-                    //All of the wallet-spent and wallet-received notes are consistent with a shielding transaction.
-                    // e.g. only transparent outputs are spend and only shielded notes are received
-                    spent_notes.is_empty() && !spent_utxos.is_empty()
-                        // The transaction contains at least one wallet-received note.
-                        && !received_notes.is_empty()
-                        // We do not know about any external outputs of the transaction.
-                        && sent_notes.is_empty()
-                };
+                // A shielding transaction spends transparent outputs and receives only shielded
+                // notes, with no external (non-change) outputs.
+                let is_shielding = spent_notes.is_empty()
+                    && !spent_utxos.is_empty()
+                    && !received_notes.is_empty()
+                    && sent_notes.is_empty();
 
                 let has_change = received_notes.iter().any(|note| note.is_change);
+
+                // Determine whether this is a pool-crossing transaction: a wallet-internal
+                // transfer between shielded pools. It is detected when every wallet-spent and
+                // wallet-received note/output is shielded, at least one note is spent, at least
+                // one output is received in a pool the account spent nothing from, and there are
+                // no external outputs.
+                let pool_crossing_value = {
+                    let spent_pools: BTreeSet<ShieldedPool> = spent_notes
+                        .iter()
+                        .map(|(note_id, _)| note_id.protocol())
+                        .collect();
+
+                    let received_pools: BTreeSet<ShieldedPool> = received_notes
+                        .iter()
+                        .map(|note| note.note_id.protocol())
+                        .collect();
+
+                    if !spent_pools.is_empty()
+                        && spent_utxos.is_empty()
+                        && received_pools.iter().any(|p| !spent_pools.contains(p))
+                        && sent_notes.is_empty()
+                    {
+                        let crossing_value: u64 = received_notes
+                            .iter()
+                            .filter(|note| !spent_pools.contains(&note.note_id.protocol()))
+                            .map(|note| note.note.value().into_u64())
+                            .sum();
+                        Some(Zatoshis::from_u64(crossing_value)?)
+                    } else {
+                        None
+                    }
+                };
 
                 Ok(
                     zcash_client_backend::data_api::testing::TransactionSummary::from_parts(
@@ -361,7 +395,7 @@ where
                         0,            // Unimplemented: memo_count
                         false,        // Unimplemented: expired_unmined
                         is_shielding, // is_shielding
-                        None,         // pool_crossing_value (unimplemented)
+                        pool_crossing_value,
                     ),
                 )
             })
