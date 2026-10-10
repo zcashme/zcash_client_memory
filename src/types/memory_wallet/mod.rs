@@ -992,6 +992,29 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         Ok(None)
     }
 
+    #[cfg(feature = "orchard")]
+    pub(crate) fn get_ironwood_max_checkpointed_height(
+        &self,
+        chain_tip_height: BlockHeight,
+        min_confirmations: NonZeroU32,
+    ) -> Result<Option<BlockHeight>, Error> {
+        let max_checkpoint_height =
+            u32::from(chain_tip_height).saturating_sub(u32::from(min_confirmations) - 1);
+        // scan backward and find the first checkpoint that matches a blockheight prior to max_checkpoint_height
+        for height in (0..=max_checkpoint_height).rev() {
+            let height = BlockHeight::from_u32(height);
+            if self
+                .ironwood_tree
+                .store()
+                .get_checkpoint(&height)?
+                .is_some()
+            {
+                return Ok(Some(height));
+            }
+        }
+        Ok(None)
+    }
+
     /// Get the unscanned ranges from the scan queue and their corresponding sapling tree indices
     /// This can be used to determine if a note is in an unscanned range and therefore not spendable
     pub(crate) fn unscanned_ranges(
@@ -1371,6 +1394,94 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
 
             let max_tree_size = Some(min_idx << ORCHARD_SHARD_HEIGHT);
             let min_tree_size = Some((max_idx + 1) << ORCHARD_SHARD_HEIGHT);
+
+            Ok(start_size.or(min_tree_size).zip(max_tree_size).map(
+                |(min_tree_size, max_tree_size)| {
+                    Ratio::new(scanned_count, max_tree_size - min_tree_size)
+                },
+            ))
+        }
+    }
+
+    #[cfg(feature = "orchard")]
+    pub(crate) fn ironwood_scan_progress(
+        &self,
+        birthday_height: &BlockHeight,
+        fully_scanned_height: &BlockHeight,
+        chain_tip_height: &BlockHeight,
+    ) -> Result<Option<Ratio<u64>>, Error> {
+        if fully_scanned_height == chain_tip_height {
+            let outputs_sum = self
+                .blocks
+                .iter()
+                .filter(|(height, _)| height >= &birthday_height)
+                .fold(0, |sum, (_, block)| {
+                    sum + block.ironwood_action_count.unwrap_or(0)
+                });
+            Ok(Some(Ratio::new(
+                u64::from(outputs_sum),
+                u64::from(outputs_sum),
+            )))
+        } else {
+            // Get the starting note commitment tree size from the wallet birthday, or failing that
+            // from the blocks table.
+            let start_size = self
+                .accounts
+                .values()
+                .filter_map(|account| {
+                    if account.birthday().height() == *birthday_height {
+                        Some(
+                            account
+                                .birthday()
+                                .prior_chain_state()
+                                .final_ironwood_tree()
+                                .tree_size(),
+                        )
+                    } else {
+                        None
+                    }
+                })
+                .next()
+                .or_else(|| {
+                    self.blocks
+                        .iter()
+                        .filter(|(height, _)| height <= &birthday_height)
+                        .map(|(_, block)| {
+                            u64::from(
+                                block.ironwood_commitment_tree_size.unwrap_or(0)
+                                    - block.ironwood_action_count.unwrap_or(0),
+                            )
+                        })
+                        .max()
+                });
+
+            // Compute the total blocks scanned so far above the starting height
+            let scanned_count = self
+                .blocks
+                .iter()
+                .filter(|(height, _)| height > &birthday_height)
+                .fold(0_u64, |acc, (_, block)| {
+                    acc + u64::from(block.ironwood_action_count.unwrap_or(0))
+                });
+
+            // We don't have complete information on how many outputs will exist in the shard at
+            // the chain tip without having scanned the chain tip block, so we overestimate by
+            // computing the maximum possible number of notes directly from the shard indices.
+            //
+            // TODO: it would be nice to be able to reliably have the size of the commitment tree
+            // at the chain tip without having to have scanned that block.
+
+            let shard_index_iter = self
+                .ironwood_tree_shard_end_heights
+                .iter()
+                .filter(|(_, height)| height > &birthday_height)
+                .map(|(address, _)| address.index());
+
+            let min_idx = shard_index_iter.clone().min().unwrap_or(0);
+            let max_idx = shard_index_iter.max().unwrap_or(0);
+
+            let max_tree_size = Some(min_idx << IRONWOOD_SHARD_HEIGHT);
+            let min_tree_size = Some((max_idx + 1) << IRONWOOD_SHARD_HEIGHT);
 
             Ok(start_size.or(min_tree_size).zip(max_tree_size).map(
                 |(min_tree_size, max_tree_size)| {

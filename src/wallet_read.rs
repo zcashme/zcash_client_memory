@@ -27,7 +27,7 @@ use zcash_client_backend::{
 use zcash_keys::{address::UnifiedAddress, keys::UnifiedIncomingViewingKey};
 use zcash_primitives::{
     block::BlockHash,
-    transaction::{Transaction, TransactionData, TxId},
+    transaction::{Transaction, TransactionData, TxId, TxVersion},
 };
 use zcash_protocol::{
     PoolType,
@@ -312,14 +312,21 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
                     let value = txo.txout.value();
                     if is_coinbase {
                         if is_locked {
-                            balance.with_unshielded_coinbase_balance_mut(|b| b.add_locked_value(value))?;
+                            balance.with_unshielded_coinbase_balance_mut(|b| {
+                                b.add_locked_value(value)
+                            })?;
                         } else {
-                            balance.with_unshielded_coinbase_balance_mut(|b| b.add_spendable_value(value))?;
+                            balance.with_unshielded_coinbase_balance_mut(|b| {
+                                b.add_spendable_value(value)
+                            })?;
                         }
                     } else if is_locked {
-                        balance.with_unshielded_regular_balance_mut(|b| b.add_locked_value(value))?;
+                        balance
+                            .with_unshielded_regular_balance_mut(|b| b.add_locked_value(value))?;
                     } else {
-                        balance.with_unshielded_regular_balance_mut(|b| b.add_spendable_value(value))?;
+                        balance.with_unshielded_regular_balance_mut(|b| {
+                            b.add_spendable_value(value)
+                        })?;
                     }
                 }
             }
@@ -348,7 +355,7 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             .map(|s| s.root_addr().index())
             .unwrap_or(0);
 
-        // Treat Sapling and Orchard outputs as having the same cost to scan.
+        // Treat Sapling, Orchard, and Ironwood outputs as having the same cost to scan.
         let sapling_scan_progress =
             self.sapling_scan_progress(&birthday_height, &fully_scanned_height, &chain_tip_height)?;
         #[cfg(feature = "orchard")]
@@ -356,6 +363,14 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             self.orchard_scan_progress(&birthday_height, &fully_scanned_height, &chain_tip_height)?;
         #[cfg(not(feature = "orchard"))]
         let orchard_scan_progress: Option<Ratio<u64>> = None;
+        #[cfg(feature = "orchard")]
+        let ironwood_scan_progress = self.ironwood_scan_progress(
+            &birthday_height,
+            &fully_scanned_height,
+            &chain_tip_height,
+        )?;
+        #[cfg(not(feature = "orchard"))]
+        let ironwood_scan_progress: Option<Ratio<u64>> = None;
 
         let scan_progress = sapling_scan_progress
             .zip(orchard_scan_progress)
@@ -367,6 +382,16 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             })
             .or(sapling_scan_progress)
             .or(orchard_scan_progress);
+        let scan_progress = scan_progress
+            .zip(ironwood_scan_progress)
+            .map(|(p, i)| {
+                Ratio::new(
+                    p.numerator() + i.numerator(),
+                    p.denominator() + i.denominator(),
+                )
+            })
+            .or(scan_progress)
+            .or(ironwood_scan_progress);
 
         // TODO: This won't work
         let scan_progress = Progress::new(scan_progress.unwrap(), Some(Ratio::new(0, 0)));
@@ -516,11 +541,22 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
             #[cfg(not(feature = "orchard"))]
             let orchard_anchor_height: Option<BlockHeight> = None;
 
+            #[cfg(feature = "orchard")]
+            let ironwood_anchor_height =
+                self.get_ironwood_max_checkpointed_height(chain_tip_height, min_confirmations)?;
+            #[cfg(not(feature = "orchard"))]
+            let ironwood_anchor_height: Option<BlockHeight> = None;
+
             let anchor_height = sapling_anchor_height
                 .zip(orchard_anchor_height)
                 .map(|(s, o)| std::cmp::min(s, o))
                 .or(sapling_anchor_height)
                 .or(orchard_anchor_height);
+            let anchor_height = anchor_height
+                .zip(ironwood_anchor_height)
+                .map(|(a, i)| std::cmp::min(a, i))
+                .or(anchor_height)
+                .or(ironwood_anchor_height);
 
             Ok(anchor_height.map(|h| (TargetHeight::from(chain_tip_height + 1), h)))
         } else {
@@ -599,22 +635,41 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
 
                 let expiry_height = tx_data.expiry_height();
                 if expiry_height > BlockHeight::from(0) {
-                    Ok(TransactionData::from_parts(
-                        tx_data.version(),
-                        BranchId::for_height(&self.params, expiry_height),
-                        tx_data.lock_time(),
-                        expiry_height,
-                        #[cfg(all(
-                            any(zcash_unstable = "nu7", zcash_unstable = "zfuture"),
-                            feature = "zip-233"
-                        ))]
-                        tx_data.zip233_amount(),
-                        tx_data.transparent_bundle().cloned(),
-                        tx_data.sprout_bundle().cloned(),
-                        tx_data.sapling_bundle().cloned(),
-                        tx_data.orchard_bundle().cloned(),
-                    )
-                        .freeze()?)
+                    match tx_data.version() {
+                        // `from_parts` has no Ironwood bundle, so v6 transactions are rebuilt
+                        // with `from_parts_v6`.
+                        TxVersion::V6 => Ok(TransactionData::from_parts_v6(
+                            BranchId::for_height(&self.params, expiry_height),
+                            tx_data.lock_time(),
+                            expiry_height,
+                            #[cfg(all(
+                                any(zcash_unstable = "nu7", zcash_unstable = "zfuture"),
+                                feature = "zip-233"
+                            ))]
+                            tx_data.zip233_amount(),
+                            tx_data.transparent_bundle().cloned(),
+                            tx_data.sapling_bundle().cloned(),
+                            tx_data.orchard_bundle().cloned(),
+                            tx_data.ironwood_bundle().cloned(),
+                        )
+                        .freeze()?),
+                        version => Ok(TransactionData::from_parts(
+                            version,
+                            BranchId::for_height(&self.params, expiry_height),
+                            tx_data.lock_time(),
+                            expiry_height,
+                            #[cfg(all(
+                                any(zcash_unstable = "nu7", zcash_unstable = "zfuture"),
+                                feature = "zip-233"
+                            ))]
+                            tx_data.zip233_amount(),
+                            tx_data.transparent_bundle().cloned(),
+                            tx_data.sprout_bundle().cloned(),
+                            tx_data.sapling_bundle().cloned(),
+                            tx_data.orchard_bundle().cloned(),
+                        )
+                        .freeze()?),
+                    }
                 } else {
                     Err(Self::Error::CorruptedData(
                         "Consensus branch ID not known, cannot parse this transaction until it is mined"
