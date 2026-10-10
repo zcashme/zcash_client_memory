@@ -1291,9 +1291,13 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
     /// block, this function does nothing.
     ///
     /// This should only be executed inside a transactional context.
-    fn truncate_to_height(&mut self, max_height: BlockHeight) -> Result<BlockHeight, <Self as WalletRead>::Error> {
+    fn truncate_to_height(
+        &mut self,
+        max_height: BlockHeight,
+    ) -> Result<BlockHeight, <Self as WalletRead>::Error> {
         let truncation_height = {
-            // This is the intersection of all the checkpoint heights from the sapling, orchard, and ironwood trees.
+            // This is the intersection of the checkpoint heights from the sapling and orchard trees,
+            // limited to heights the ironwood tree can also be truncated to.
             let mut checkpoint_heights = BTreeSet::new();
             self.sapling_tree.store().for_each_checkpoint(
                 self.sapling_tree.store().checkpoint_count()?,
@@ -1326,10 +1330,15 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
                     .intersection(&orchard_checkpoint_heights)
                     .copied()
                     .collect();
-                checkpoint_heights = checkpoint_heights
-                    .intersection(&ironwood_checkpoint_heights)
-                    .copied()
-                    .collect();
+                // Wallets saved before Ironwood support have no Ironwood checkpoints, so also
+                // accept heights with no Ironwood checkpoint above them.
+                checkpoint_heights.retain(|height| {
+                    ironwood_checkpoint_heights.contains(height)
+                        || ironwood_checkpoint_heights
+                            .range(*height..)
+                            .next()
+                            .is_none()
+                });
             }
             // All the checkpoints that are greater than the truncation height
             let over = checkpoint_heights.split_off(&(u32::from(max_height + 1)));
@@ -1397,10 +1406,19 @@ impl<P: consensus::Parameters> WalletWrite for MemoryWalletDb<P> {
             self.with_orchard_tree_mut(|tree| {
                 tree.truncate_to_checkpoint(&truncation_height).map(|_| ())
             })?;
+            // Without a checkpoint at the truncation height, the Ironwood tree has none above it
+            // and is left as is.
             #[cfg(feature = "orchard")]
-            self.with_ironwood_tree_mut(|tree| {
-                tree.truncate_to_checkpoint(&truncation_height).map(|_| ())
-            })?;
+            if self
+                .ironwood_tree
+                .store()
+                .get_checkpoint(&truncation_height)?
+                .is_some()
+            {
+                self.with_ironwood_tree_mut(|tree| {
+                    tree.truncate_to_checkpoint(&truncation_height).map(|_| ())
+                })?;
+            }
 
             // Do not delete sent notes; this can contain data that is not recoverable
             // from the chain. Wallets must continue to operate correctly in the

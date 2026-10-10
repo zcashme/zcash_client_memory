@@ -190,10 +190,10 @@ impl<P: Parameters> MemoryWalletDb<P> {
                 .collect::<Result<_>>()?;
         };
 
+        // Wallets saved before Ironwood support have no Ironwood tree.
         #[cfg(feature = "orchard")]
-        {
-            wallet.ironwood_tree =
-                tree_from_protobuf(read_optional!(proto_wallet, ironwood_tree)?, 100, 16.into())?;
+        if let Some(ironwood_tree) = proto_wallet.ironwood_tree {
+            wallet.ironwood_tree = tree_from_protobuf(ironwood_tree, 100, 16.into())?;
         };
 
         #[cfg(feature = "orchard")]
@@ -470,5 +470,26 @@ impl<P: Parameters> From<&MemoryWalletDb<P>> for proto::MemoryWallet {
                 .map(Into::into)
                 .collect(),
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "orchard")]
+mod tests {
+    use zcash_protocol::consensus::Network;
+
+    use super::*;
+
+    #[test]
+    fn test_wallet_without_ironwood_tree() {
+        let wallet = MemoryWalletDb::new(Network::TestNetwork, 100);
+
+        // Wallets saved before Ironwood support have no `ironwood_tree`.
+        let mut proto_wallet: proto::MemoryWallet = (&wallet).into();
+        proto_wallet.ironwood_tree = None;
+
+        let wallet2 =
+            MemoryWalletDb::new_from_proto(proto_wallet, Network::TestNetwork, 100).unwrap();
+        assert_eq!(wallet2.ironwood_tree.store().checkpoint_count().unwrap(), 0);
     }
 }

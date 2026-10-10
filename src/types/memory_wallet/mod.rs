@@ -239,13 +239,16 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             )?;
         }
 
+        // The Ironwood birthday frontier is usually empty, so checkpoint it even then to keep a
+        // checkpoint at `birthday.height() - 1` alongside the other trees.
         #[cfg(feature = "orchard")]
-        if let Some(frontier) = birthday.prior_chain_state().final_ironwood_tree().value() {
+        {
+            let frontier = birthday.prior_chain_state().final_ironwood_tree();
             tracing::debug!("Inserting Ironwood frontier into ShardTree: {:?}", frontier);
             // The same subtraction invariant as for Sapling/Orchard applies here:
             // `frontier` is the Ironwood tree state at the end of the block before
             // `birthday.height()`.
-            self.ironwood_tree.insert_frontier_nodes(
+            self.ironwood_tree.insert_frontier(
                 frontier.clone(),
                 Retention::Checkpoint {
                     id: birthday.height() - 1,

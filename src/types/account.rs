@@ -545,6 +545,8 @@ impl zcash_client_backend::data_api::Account for Account {
 }
 
 mod serialization {
+    #[cfg(feature = "orchard")]
+    use incrementalmerkletree::frontier::Frontier;
     use zcash_client_backend::data_api::Zip32Derivation;
     use zcash_client_backend::data_api::chain::ChainState;
     use zcash_keys::encoding::AddressCodec;
@@ -796,8 +798,13 @@ mod serialization {
                 read_frontier_v1(&cs.final_sapling_tree[..])?,
                 #[cfg(feature = "orchard")]
                 read_frontier_v1(&cs.final_orchard_tree[..])?,
+                // Birthdays saved before Ironwood support have no Ironwood tree.
                 #[cfg(feature = "orchard")]
-                read_frontier_v1(&cs.final_ironwood_tree[..])?,
+                if cs.final_ironwood_tree.is_empty() {
+                    Frontier::empty()
+                } else {
+                    read_frontier_v1(&cs.final_ironwood_tree[..])?
+                },
             );
 
             let recover_until = birthday.recover_until.map(|r| r.into());
@@ -836,6 +843,26 @@ mod serialization {
             let proto_acc2: proto::Account = acc2.clone().into();
 
             assert_eq!(proto_acc, proto_acc2);
+        }
+
+        #[test]
+        #[cfg(feature = "orchard")]
+        fn test_birthday_without_ironwood_tree() {
+            let birthday = AccountBirthday::from_sapling_activation(
+                &EncodingParams,
+                BlockHash::from_slice(&[0; 32]),
+            );
+
+            // Birthdays saved before Ironwood support have no `final_ironwood_tree`.
+            let mut proto_birthday: proto::AccountBirthday = birthday.clone().try_into().unwrap();
+            proto_birthday
+                .prior_chain_state
+                .as_mut()
+                .unwrap()
+                .final_ironwood_tree = vec![];
+
+            let birthday2: AccountBirthday = proto_birthday.try_into().unwrap();
+            assert_eq!(birthday2, birthday);
         }
     }
 }
