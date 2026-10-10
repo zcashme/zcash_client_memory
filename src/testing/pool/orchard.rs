@@ -2,6 +2,15 @@ use crate::testing;
 
 use zcash_client_backend::data_api::testing::orchard::OrchardPoolTester;
 use zcash_client_backend::data_api::testing::sapling::SaplingPoolTester;
+use zcash_client_backend::data_api::{
+    Account as _, InputSource as _, WalletRead as _,
+    testing::{AddressType, IronwoodFvk, TestBuilder, pool::ShieldedPoolTester},
+    wallet::{ConfirmationsPolicy, TargetHeight, input_selection::LockFilter},
+};
+use zcash_primitives::block::BlockHash;
+use zcash_protocol::{ShieldedPool, value::Zatoshis};
+
+use crate::testing::{MemBlockCache, TestMemDbFactory};
 
 #[test]
 fn send_single_step_proposed_transfer() {
@@ -174,4 +183,93 @@ fn scan_cached_blocks_detects_spends_out_of_order() {
 #[ignore] //FIXME
 fn receive_two_notes_with_same_value() {
     testing::pool::receive_two_notes_with_same_value::<OrchardPoolTester>()
+}
+
+#[test]
+fn select_single_spendable_note_finds_covering_note_after_smaller_notes() {
+    let mut st = TestBuilder::new()
+        .with_data_store_factory(TestMemDbFactory::new())
+        .with_block_cache(MemBlockCache::new())
+        .with_account_from_sapling_activation(BlockHash([0; 32]))
+        .build();
+
+    let dfvk = OrchardPoolTester::test_account_fvk(&st);
+    let (h, _, _) = st.generate_next_block(
+        &dfvk,
+        AddressType::DefaultExternal,
+        Zatoshis::const_from_u64(10_000),
+    );
+    st.generate_next_block(
+        &dfvk,
+        AddressType::DefaultExternal,
+        Zatoshis::const_from_u64(10_000),
+    );
+    st.generate_next_block(
+        &dfvk,
+        AddressType::DefaultExternal,
+        Zatoshis::const_from_u64(40_000),
+    );
+    st.scan_cached_blocks(h, 3);
+
+    let account_id = st.test_account().unwrap().account().id();
+    let target_height = TargetHeight::from(st.wallet().chain_height().unwrap().unwrap() + 1);
+    let notes = st
+        .wallet()
+        .select_single_spendable_note(
+            account_id,
+            Zatoshis::const_from_u64(15_000),
+            &[ShieldedPool::Orchard],
+            target_height,
+            ConfirmationsPolicy::MIN,
+            &[],
+            LockFilter::Unfiltered,
+        )
+        .unwrap();
+
+    assert_eq!(notes.orchard().len(), 1);
+    assert_eq!(
+        notes.orchard()[0].note_value().unwrap(),
+        Zatoshis::const_from_u64(40_000)
+    );
+}
+
+#[test]
+fn select_single_spendable_note_uses_first_pool_in_sources() {
+    let mut st = TestBuilder::new()
+        .with_data_store_factory(TestMemDbFactory::new())
+        .with_block_cache(MemBlockCache::new())
+        .with_account_from_sapling_activation(BlockHash([0; 32]))
+        .build();
+
+    let orchard_fvk = OrchardPoolTester::test_account_fvk(&st);
+    let ironwood_fvk = IronwoodFvk(orchard_fvk.clone());
+    let (h, _, _) = st.generate_next_block(
+        &orchard_fvk,
+        AddressType::DefaultExternal,
+        Zatoshis::const_from_u64(40_000),
+    );
+    st.generate_next_block(
+        &ironwood_fvk,
+        AddressType::DefaultExternal,
+        Zatoshis::const_from_u64(40_000),
+    );
+    st.scan_cached_blocks(h, 2);
+
+    let account_id = st.test_account().unwrap().account().id();
+    let target_height = TargetHeight::from(st.wallet().chain_height().unwrap().unwrap() + 1);
+    let notes = st
+        .wallet()
+        .select_single_spendable_note(
+            account_id,
+            Zatoshis::const_from_u64(15_000),
+            &[ShieldedPool::Ironwood, ShieldedPool::Orchard],
+            target_height,
+            ConfirmationsPolicy::MIN,
+            &[],
+            LockFilter::Unfiltered,
+        )
+        .unwrap();
+
+    assert_eq!(notes.ironwood().len(), 1);
+    assert!(notes.orchard().is_empty());
 }

@@ -199,51 +199,168 @@ impl<P: consensus::Parameters> InputSource for MemoryWalletDb<P> {
         exclude: &[Self::NoteRef],
         lock_filter: LockFilter<'_>,
     ) -> Result<ReceivedNotes<Self::NoteRef>, Self::Error> {
-        let notes = self.select_spendable_notes(
-            account,
-            TargetValue::AtLeast(value),
-            sources,
-            target_height,
-            confirmations_policy,
-            exclude,
-            lock_filter,
-        )?;
+        let birthday_height = match self.get_wallet_birthday()? {
+            Some(birthday) => birthday,
+            None => {
+                // the wallet birthday can only be unknown if there are no accounts in the wallet; in
+                // such a case, the wallet has no notes to spend.
+                return to_spendable_notes(
+                    &[],
+                    #[cfg(feature = "orchard")]
+                    &[],
+                    #[cfg(feature = "orchard")]
+                    &[],
+                );
+            }
+        };
 
-        // `select_spendable_notes_from_pool` sorts by tier preference then age, so the first
-        // covering note in each pool is the preferred-tier oldest covering note.
-        let sapling = notes
-            .sapling()
-            .iter()
-            .find(|n| n.note_value().is_ok_and(|v| v >= value))
-            .cloned()
-            .into_iter()
-            .collect();
+        // Sort by lock tier preference (if any), then by age, as in
+        // `select_spendable_notes_from_pool`.
+        let prefers_locked = match lock_filter {
+            LockFilter::Policy(policy) if policy.admits_locked() => Some(policy.prefers_locked()),
+            _ => None,
+        };
 
-        #[cfg(feature = "orchard")]
-        let orchard = notes
-            .orchard()
-            .iter()
-            .find(|n| n.note_value().is_ok_and(|v| v >= value))
-            .cloned()
-            .into_iter()
-            .collect();
+        // Take the first covering note from the first pool in `sources` that has one.
+        for pool in sources {
+            match pool {
+                Sapling => {
+                    let mut eligible_notes = self
+                        .received_notes
+                        .iter()
+                        .filter(|note| note.account_id == account)
+                        .filter(|note| note.note.pool() == Sapling)
+                        .filter(|note| {
+                            self.note_is_spendable(
+                                note,
+                                birthday_height,
+                                target_height,
+                                confirmations_policy,
+                                exclude,
+                                lock_filter,
+                            )
+                            .unwrap()
+                        })
+                        .collect::<Vec<_>>();
+                    eligible_notes.sort_by(|a, b| {
+                        let a_locked = a
+                            .lock_expiry_height
+                            .is_some_and(|h| h >= BlockHeight::from(target_height));
+                        let b_locked = b
+                            .lock_expiry_height
+                            .is_some_and(|h| h >= BlockHeight::from(target_height));
+                        match prefers_locked {
+                            None => Ordering::Equal,
+                            Some(true) => b_locked.cmp(&a_locked),
+                            Some(false) => a_locked.cmp(&b_locked),
+                        }
+                        .then_with(|| a.commitment_tree_position.cmp(&b.commitment_tree_position))
+                    });
+                    if let Some(note) = eligible_notes
+                        .into_iter()
+                        .find(|note| note.note.value() >= value)
+                    {
+                        return to_spendable_notes(
+                            &[note],
+                            #[cfg(feature = "orchard")]
+                            &[],
+                            #[cfg(feature = "orchard")]
+                            &[],
+                        );
+                    }
+                }
+                #[cfg(feature = "orchard")]
+                Orchard => {
+                    let mut eligible_notes = self
+                        .received_notes
+                        .iter()
+                        .filter(|note| note.account_id == account)
+                        .filter(|note| note.note.pool() == Orchard)
+                        .filter(|note| {
+                            self.note_is_spendable(
+                                note,
+                                birthday_height,
+                                target_height,
+                                confirmations_policy,
+                                exclude,
+                                lock_filter,
+                            )
+                            .unwrap()
+                        })
+                        .collect::<Vec<_>>();
+                    eligible_notes.sort_by(|a, b| {
+                        let a_locked = a
+                            .lock_expiry_height
+                            .is_some_and(|h| h >= BlockHeight::from(target_height));
+                        let b_locked = b
+                            .lock_expiry_height
+                            .is_some_and(|h| h >= BlockHeight::from(target_height));
+                        match prefers_locked {
+                            None => Ordering::Equal,
+                            Some(true) => b_locked.cmp(&a_locked),
+                            Some(false) => a_locked.cmp(&b_locked),
+                        }
+                        .then_with(|| a.commitment_tree_position.cmp(&b.commitment_tree_position))
+                    });
+                    if let Some(note) = eligible_notes
+                        .into_iter()
+                        .find(|note| note.note.value() >= value)
+                    {
+                        return to_spendable_notes(&[], &[note], &[]);
+                    }
+                }
+                #[cfg(feature = "orchard")]
+                ShieldedPool::Ironwood => {
+                    let mut eligible_notes = self
+                        .received_notes
+                        .iter()
+                        .filter(|note| note.account_id == account)
+                        .filter(|note| note.note.pool() == ShieldedPool::Ironwood)
+                        .filter(|note| {
+                            self.note_is_spendable(
+                                note,
+                                birthday_height,
+                                target_height,
+                                confirmations_policy,
+                                exclude,
+                                lock_filter,
+                            )
+                            .unwrap()
+                        })
+                        .collect::<Vec<_>>();
+                    eligible_notes.sort_by(|a, b| {
+                        let a_locked = a
+                            .lock_expiry_height
+                            .is_some_and(|h| h >= BlockHeight::from(target_height));
+                        let b_locked = b
+                            .lock_expiry_height
+                            .is_some_and(|h| h >= BlockHeight::from(target_height));
+                        match prefers_locked {
+                            None => Ordering::Equal,
+                            Some(true) => b_locked.cmp(&a_locked),
+                            Some(false) => a_locked.cmp(&b_locked),
+                        }
+                        .then_with(|| a.commitment_tree_position.cmp(&b.commitment_tree_position))
+                    });
+                    if let Some(note) = eligible_notes
+                        .into_iter()
+                        .find(|note| note.note.value() >= value)
+                    {
+                        return to_spendable_notes(&[], &[], &[note]);
+                    }
+                }
+                #[cfg(not(feature = "orchard"))]
+                ShieldedPool::Orchard | ShieldedPool::Ironwood => {}
+            }
+        }
 
-        #[cfg(feature = "orchard")]
-        let ironwood = notes
-            .ironwood()
-            .iter()
-            .find(|n| n.note_value().is_ok_and(|v| v >= value))
-            .cloned()
-            .into_iter()
-            .collect();
-
-        Ok(ReceivedNotes::new(
-            sapling,
+        to_spendable_notes(
+            &[],
             #[cfg(feature = "orchard")]
-            orchard,
+            &[],
             #[cfg(feature = "orchard")]
-            ironwood,
-        ))
+            &[],
+        )
     }
 
     fn select_unspent_notes(

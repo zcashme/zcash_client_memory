@@ -80,13 +80,23 @@ impl<P: consensus::Parameters> WalletCommitmentTrees for MemoryWalletDb<P> {
         index: u64,
     ) -> Result<Option<sapling::Node>, ShardTreeError<Self::Error>> {
         let root_addr = Address::from_parts(SAPLING_SHARD_HEIGHT.into(), index);
-        Ok(if let Some(shard) = self.sapling_tree.store().get_shard(root_addr).map_err(ShardTreeError::Storage)? {
-            shard
-                .max_position()
-                .and_then(|max_pos| shard.root_hash(max_pos).ok())
-        } else {
-            None
-        })
+        Ok(
+            if let Some(shard) = self
+                .sapling_tree
+                .store()
+                .get_shard(root_addr)
+                .map_err(ShardTreeError::Storage)?
+            {
+                // Only a completed subtree has a root.
+                if shard.max_position() == Some(root_addr.max_position()) {
+                    shard.root_hash(root_addr.position_range_end()).ok()
+                } else {
+                    None
+                }
+            } else {
+                None
+            },
+        )
     }
 
     /// Adds a sequence of note commitment tree subtree roots to the data store.
@@ -123,13 +133,23 @@ impl<P: consensus::Parameters> WalletCommitmentTrees for MemoryWalletDb<P> {
         index: u64,
     ) -> Result<Option<orchard::tree::MerkleHashOrchard>, ShardTreeError<Self::Error>> {
         let root_addr = Address::from_parts(ORCHARD_SHARD_HEIGHT.into(), index);
-        Ok(if let Some(shard) = self.orchard_tree.store().get_shard(root_addr).map_err(ShardTreeError::Storage)? {
-            shard
-                .max_position()
-                .and_then(|max_pos| shard.root_hash(max_pos).ok())
-        } else {
-            None
-        })
+        Ok(
+            if let Some(shard) = self
+                .orchard_tree
+                .store()
+                .get_shard(root_addr)
+                .map_err(ShardTreeError::Storage)?
+            {
+                // Only a completed subtree has a root.
+                if shard.max_position() == Some(root_addr.max_position()) {
+                    shard.root_hash(root_addr.position_range_end()).ok()
+                } else {
+                    None
+                }
+            } else {
+                None
+            },
+        )
     }
 
     #[cfg(feature = "orchard")]
@@ -182,13 +202,23 @@ impl<P: consensus::Parameters> WalletCommitmentTrees for MemoryWalletDb<P> {
         index: u64,
     ) -> Result<Option<orchard::tree::MerkleHashOrchard>, ShardTreeError<Self::Error>> {
         let root_addr = Address::from_parts(IRONWOOD_SHARD_HEIGHT.into(), index);
-        Ok(if let Some(shard) = self.ironwood_tree.store().get_shard(root_addr).map_err(ShardTreeError::Storage)? {
-            shard
-                .max_position()
-                .and_then(|max_pos| shard.root_hash(max_pos).ok())
-        } else {
-            None
-        })
+        Ok(
+            if let Some(shard) = self
+                .ironwood_tree
+                .store()
+                .get_shard(root_addr)
+                .map_err(ShardTreeError::Storage)?
+            {
+                // Only a completed subtree has a root.
+                if shard.max_position() == Some(root_addr.max_position()) {
+                    shard.root_hash(root_addr.position_range_end()).ok()
+                } else {
+                    None
+                }
+            } else {
+                None
+            },
+        )
     }
 }
 
@@ -291,5 +321,102 @@ pub(crate) mod serialization {
         }
 
         Ok(tree)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use incrementalmerkletree::{Hashable, Level, Retention};
+    use zcash_client_backend::data_api::{
+        SAPLING_SHARD_HEIGHT, WalletCommitmentTrees, chain::CommitmentTreeRoot,
+    };
+    use zcash_protocol::consensus::{BlockHeight, Network};
+
+    use crate::MemoryWalletDb;
+
+    #[cfg(feature = "orchard")]
+    use zcash_client_backend::data_api::{IRONWOOD_SHARD_HEIGHT, ORCHARD_SHARD_HEIGHT};
+
+    #[test]
+    fn sapling_subtree_root() {
+        let mut wallet = MemoryWalletDb::new(Network::TestNetwork, 100);
+        let root = sapling::Node::empty_root(Level::from(SAPLING_SHARD_HEIGHT));
+        wallet
+            .put_sapling_subtree_roots(
+                0,
+                &[CommitmentTreeRoot::from_parts(
+                    BlockHeight::from(500_000),
+                    root,
+                )],
+            )
+            .unwrap();
+        assert_eq!(wallet.get_sapling_subtree_root(0).unwrap(), Some(root));
+        assert_eq!(wallet.get_sapling_subtree_root(1).unwrap(), None);
+
+        // An incomplete subtree has no root.
+        let mut wallet = MemoryWalletDb::new(Network::TestNetwork, 100);
+        wallet
+            .sapling_tree
+            .append(sapling::Node::empty_leaf(), Retention::Ephemeral)
+            .unwrap();
+        assert_eq!(wallet.get_sapling_subtree_root(0).unwrap(), None);
+    }
+
+    #[test]
+    #[cfg(feature = "orchard")]
+    fn orchard_subtree_root() {
+        let mut wallet = MemoryWalletDb::new(Network::TestNetwork, 100);
+        let root = orchard::tree::MerkleHashOrchard::empty_root(Level::from(ORCHARD_SHARD_HEIGHT));
+        wallet
+            .put_orchard_subtree_roots(
+                0,
+                &[CommitmentTreeRoot::from_parts(
+                    BlockHeight::from(500_000),
+                    root,
+                )],
+            )
+            .unwrap();
+        assert_eq!(wallet.get_orchard_subtree_root(0).unwrap(), Some(root));
+        assert_eq!(wallet.get_orchard_subtree_root(1).unwrap(), None);
+
+        // An incomplete subtree has no root.
+        let mut wallet = MemoryWalletDb::new(Network::TestNetwork, 100);
+        wallet
+            .orchard_tree
+            .append(
+                orchard::tree::MerkleHashOrchard::empty_leaf(),
+                Retention::Ephemeral,
+            )
+            .unwrap();
+        assert_eq!(wallet.get_orchard_subtree_root(0).unwrap(), None);
+    }
+
+    #[test]
+    #[cfg(feature = "orchard")]
+    fn ironwood_subtree_root() {
+        let mut wallet = MemoryWalletDb::new(Network::TestNetwork, 100);
+        let root = orchard::tree::MerkleHashOrchard::empty_root(Level::from(IRONWOOD_SHARD_HEIGHT));
+        wallet
+            .put_ironwood_subtree_roots(
+                0,
+                &[CommitmentTreeRoot::from_parts(
+                    BlockHeight::from(500_000),
+                    root,
+                )],
+            )
+            .unwrap();
+        assert_eq!(wallet.get_ironwood_subtree_root(0).unwrap(), Some(root));
+        assert_eq!(wallet.get_ironwood_subtree_root(1).unwrap(), None);
+
+        // An incomplete subtree has no root.
+        let mut wallet = MemoryWalletDb::new(Network::TestNetwork, 100);
+        wallet
+            .ironwood_tree
+            .append(
+                orchard::tree::MerkleHashOrchard::empty_leaf(),
+                Retention::Ephemeral,
+            )
+            .unwrap();
+        assert_eq!(wallet.get_ironwood_subtree_root(0).unwrap(), None);
     }
 }
