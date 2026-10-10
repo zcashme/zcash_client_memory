@@ -5,7 +5,7 @@ version = "0.0.0"
 repository = "https://github.com/zcash/zcash_client_memory"
 license = "MIT OR Apache-2.0"
 edition = "2024"
-rust-version = "1.85.1"
+rust-version = "1.88"
 build = "build.rs"
 
 # Exclude proto files so crates.io consumers don't need protoc.

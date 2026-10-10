@@ -2,13 +2,17 @@ use crate::testing;
 
 use zcash_client_backend::data_api::testing::orchard::OrchardPoolTester;
 use zcash_client_backend::data_api::testing::sapling::SaplingPoolTester;
-use zcash_client_backend::data_api::{
-    Account as _, InputSource as _, WalletRead as _,
-    testing::{AddressType, IronwoodFvk, TestBuilder, pool::ShieldedPoolTester},
-    wallet::{ConfirmationsPolicy, TargetHeight, input_selection::LockFilter},
+use zcash_client_backend::{
+    data_api::{
+        Account as _, InputSource as _, OutputLockStore as _, WalletRead as _,
+        error::LockError,
+        testing::{AddressType, IronwoodFvk, TestBuilder, pool::ShieldedPoolTester},
+        wallet::{ConfirmationsPolicy, TargetHeight, input_selection::LockFilter},
+    },
+    wallet::{LockOwner, OutputRef},
 };
 use zcash_primitives::block::BlockHash;
-use zcash_protocol::{ShieldedPool, value::Zatoshis};
+use zcash_protocol::{PoolType, ShieldedPool, value::Zatoshis};
 
 use crate::testing::{MemBlockCache, TestMemDbFactory};
 
@@ -272,4 +276,73 @@ fn select_single_spendable_note_uses_first_pool_in_sources() {
 
     assert_eq!(notes.ironwood().len(), 1);
     assert!(notes.orchard().is_empty());
+}
+
+#[test]
+fn lock_outputs_rejects_output_index_beyond_u16() {
+    let mut st = TestBuilder::new()
+        .with_data_store_factory(TestMemDbFactory::new())
+        .with_block_cache(MemBlockCache::new())
+        .with_account_from_sapling_activation(BlockHash([0; 32]))
+        .build();
+
+    let dfvk = OrchardPoolTester::test_account_fvk(&st);
+    let (h, _, _) = st.generate_next_block(
+        &dfvk,
+        AddressType::DefaultExternal,
+        Zatoshis::const_from_u64(10_000),
+    );
+    st.scan_cached_blocks(h, 1);
+
+    // An index that only matches the note if truncated to `u16`.
+    let note_id = st.wallet().received_notes.iter().next().unwrap().note_id;
+    let output = OutputRef::new(
+        *note_id.txid(),
+        PoolType::ORCHARD,
+        u32::from(note_id.output_index()) + 65536,
+    );
+    assert!(matches!(
+        st.wallet_mut()
+            .lock_outputs(&[output], LockOwner::new([7; 32]), h + 100),
+        Err(LockError::LockFailure(failed)) if failed == output
+    ));
+    assert!(
+        st.wallet()
+            .received_notes
+            .iter()
+            .all(|note| note.lock_owner.is_none())
+    );
+}
+
+#[test]
+fn get_locked_outputs_without_chain_tip() {
+    let mut st = TestBuilder::new()
+        .with_data_store_factory(TestMemDbFactory::new())
+        .with_block_cache(MemBlockCache::new())
+        .with_account_from_sapling_activation(BlockHash([0; 32]))
+        .build();
+
+    let dfvk = OrchardPoolTester::test_account_fvk(&st);
+    let (h, _, _) = st.generate_next_block(
+        &dfvk,
+        AddressType::DefaultExternal,
+        Zatoshis::const_from_u64(10_000),
+    );
+    st.scan_cached_blocks(h, 1);
+
+    // Forget the chain tip.
+    st.wallet_mut().scan_queue.0.clear();
+    assert_eq!(st.wallet().chain_height().unwrap(), None);
+
+    let note_id = st.wallet().received_notes.iter().next().unwrap().note_id;
+    let output = OutputRef::from(note_id);
+    st.wallet_mut()
+        .lock_outputs(&[output], LockOwner::new([7; 32]), h + 100)
+        .unwrap();
+
+    let account_id = st.test_account().unwrap().account().id();
+    assert_eq!(
+        st.wallet().get_locked_outputs(account_id).unwrap(),
+        vec![output]
+    );
 }

@@ -315,7 +315,9 @@ where
                 ]
                 .into_iter()
                 .find_map(identity)
-                .ok_or(Error::Other(format!("Account id could not be found for tx: {txid}")))?;
+                .ok_or(Error::Other(format!(
+                    "Account id could not be found for tx: {txid}"
+                )))?;
 
                 // Balance gained is the total value of notes/outputs received by the wallet in
                 // this transaction, including change.
@@ -362,10 +364,23 @@ where
                         .map(|note| note.note_id.protocol())
                         .collect();
 
+                    // A sent output is external unless the wallet received it back as change, as
+                    // in `zcash_client_sqlite`; `sent_notes` above omits external payments.
+                    let has_external_outputs = self
+                        .sent_notes
+                        .iter()
+                        .filter(|(note_id, _)| note_id.txid() == txid)
+                        .any(|(note_id, _)| {
+                            !self.received_notes.iter().any(|received_note| {
+                                SentNoteId::from(received_note.note_id) == *note_id
+                                    && received_note.is_change
+                            })
+                        });
+
                     if !spent_pools.is_empty()
                         && spent_utxos.is_empty()
                         && received_pools.iter().any(|p| !spent_pools.contains(p))
-                        && sent_notes.is_empty()
+                        && !has_external_outputs
                     {
                         let crossing_value: u64 = received_notes
                             .iter()

@@ -6,11 +6,11 @@ use shardtree::{ShardTree, store::memory::MemoryShardStore};
 use zcash_client_backend::{
     data_api::{
         Account as _, IRONWOOD_SHARD_HEIGHT, WalletCommitmentTrees as _, WalletRead as _,
-        WalletWrite as _,
+        WalletTest as _, WalletWrite as _,
         chain::{ChainState, CommitmentTreeRoot},
         testing::{
             AddressType, InitialChainState, IronwoodFvk, TestBuilder, orchard::OrchardPoolTester,
-            pool::ShieldedPoolTester, single_output_change_strategy,
+            pool::ShieldedPoolTester, sapling::SaplingPoolTester, single_output_change_strategy,
         },
         wallet::{ConfirmationsPolicy, input_selection::GreedyInputSelector},
     },
@@ -274,4 +274,72 @@ fn get_transaction_keeps_ironwood_bundle_without_cached_expiry() {
     let tx = st.wallet().get_transaction(txid).unwrap().unwrap();
     assert_eq!(tx.txid(), txid);
     assert!(tx.ironwood_bundle().is_some());
+}
+
+#[test]
+#[cfg(feature = "orchard")]
+fn payment_with_external_output_is_not_a_pool_crossing() {
+    // A network on which NU6.3, the version 6 transaction format, is active from height 100_000.
+    let activation = BlockHeight::from_u32(100_000);
+    let ironwood_active_network = LocalNetwork {
+        nu6: Some(activation),
+        nu6_1: Some(activation),
+        nu6_2: Some(activation),
+        nu6_3: Some(activation),
+        ..TestBuilder::<(), ()>::DEFAULT_NETWORK
+    };
+    let mut st = TestBuilder::new()
+        .with_network(ironwood_active_network)
+        .with_data_store_factory(TestMemDbFactory::new())
+        .with_block_cache(MemBlockCache::new())
+        .with_account_from_sapling_activation(BlockHash([0; 32]))
+        .build();
+
+    let dfvk = SaplingPoolTester::test_account_fvk(&st);
+    let (h, _, _) = st.generate_next_block(
+        &dfvk,
+        AddressType::DefaultExternal,
+        Zatoshis::const_from_u64(60_000),
+    );
+    st.scan_cached_blocks(h, 1);
+
+    // Spend Sapling, pay an external Orchard receiver (routed through Ironwood), and take
+    // change in Ironwood.
+    let to = OrchardPoolTester::sk_default_address(&OrchardPoolTester::sk(&[0xf5; 32]));
+    let request = TransactionRequest::new(vec![Payment::without_memo(
+        to.to_zcash_address(st.network()),
+        Zatoshis::const_from_u64(10_000),
+    )])
+    .unwrap();
+    let change_strategy =
+        single_output_change_strategy(StandardFeeRule::Zip317, None, ShieldedPool::Ironwood);
+    let account = st.test_account().unwrap();
+    let account_id = account.account().id();
+    let usk = account.usk().clone();
+    let proposal = st
+        .propose_transfer(
+            account_id,
+            &GreedyInputSelector::new(),
+            &change_strategy,
+            request,
+            ConfirmationsPolicy::MIN,
+        )
+        .unwrap();
+    let txid = *st
+        .create_proposed_transactions::<Infallible, _, Infallible, _>(
+            &usk,
+            OvkPolicy::Sender,
+            &proposal,
+        )
+        .unwrap()
+        .first();
+
+    // The wallet spent Sapling and received only Ironwood change.
+    assert!(st.wallet().received_notes.iter().any(|note| {
+        note.txid() == txid && note.note_id.protocol() == ShieldedPool::Ironwood && note.is_change
+    }));
+
+    let tx_history = st.wallet().get_tx_history().unwrap();
+    let tx = tx_history.iter().find(|tx| tx.txid() == txid).unwrap();
+    assert_eq!(tx.pool_crossing_value(), None);
 }

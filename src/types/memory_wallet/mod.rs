@@ -573,8 +573,12 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
     ) -> bool {
         match output.pool() {
             PoolType::Shielded(pool) => {
-                let note_id = NoteId::new(*output.txid(), pool, output.output_index() as u16);
-                self.get_received_note(note_id)
+                // An index that doesn't fit in `u16` can't refer to a shielded output.
+                let note_id = u16::try_from(output.output_index())
+                    .ok()
+                    .map(|index| NoteId::new(*output.txid(), pool, index));
+                note_id
+                    .and_then(|note_id| self.get_received_note(note_id))
                     .and_then(|note| note.lock_expiry_height)
                     .is_some_and(|h| h >= BlockHeight::from(target_height))
             }
@@ -596,8 +600,12 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
     ) -> Option<LockOwner> {
         match output.pool() {
             PoolType::Shielded(pool) => {
-                let note_id = NoteId::new(*output.txid(), pool, output.output_index() as u16);
-                self.get_received_note(note_id)
+                // An index that doesn't fit in `u16` can't refer to a shielded output.
+                let note_id = u16::try_from(output.output_index())
+                    .ok()
+                    .map(|index| NoteId::new(*output.txid(), pool, index));
+                note_id
+                    .and_then(|note_id| self.get_received_note(note_id))
                     .and_then(|note| {
                         let expiry = note.lock_expiry_height?;
                         if expiry >= BlockHeight::from(target_height) {
@@ -609,14 +617,16 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
             }
             PoolType::Transparent => {
                 let outpoint = OutPoint::new((*output.txid()).into(), output.output_index());
-                self.transparent_received_outputs.get(&outpoint).and_then(|txo| {
-                    let expiry = txo.lock_expiry_height?;
-                    if expiry >= BlockHeight::from(target_height) {
-                        txo.lock_owner
-                    } else {
-                        None
-                    }
-                })
+                self.transparent_received_outputs
+                    .get(&outpoint)
+                    .and_then(|txo| {
+                        let expiry = txo.lock_expiry_height?;
+                        if expiry >= BlockHeight::from(target_height) {
+                            txo.lock_owner
+                        } else {
+                            None
+                        }
+                    })
             }
         }
     }
@@ -646,13 +656,21 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
     ) -> Result<Option<AccountId>, Error> {
         match output.pool() {
             PoolType::Shielded(pool) => {
-                let note_id = NoteId::new(*output.txid(), pool, output.output_index() as u16);
-                Ok(self.get_received_note(note_id).map(|note| note.account_id()))
+                // An index that doesn't fit in `u16` can't refer to a shielded output.
+                let note_id = u16::try_from(output.output_index())
+                    .ok()
+                    .map(|index| NoteId::new(*output.txid(), pool, index));
+                Ok(note_id
+                    .and_then(|note_id| self.get_received_note(note_id))
+                    .map(|note| note.account_id()))
             }
             #[cfg(feature = "transparent-inputs")]
             PoolType::Transparent => {
                 let outpoint = OutPoint::new((*output.txid()).into(), output.output_index());
-                Ok(self.transparent_received_outputs.get(&outpoint).map(|txo| txo.account_id))
+                Ok(self
+                    .transparent_received_outputs
+                    .get(&outpoint)
+                    .map(|txo| txo.account_id))
             }
             #[cfg(not(feature = "transparent-inputs"))]
             PoolType::Transparent => Ok(None),
@@ -668,8 +686,11 @@ impl<P: consensus::Parameters> MemoryWalletDb<P> {
         let chain_tip = self.chain_height()?;
         let (current_expiry, current_owner) = match output.pool() {
             PoolType::Shielded(pool) => {
-                let note_id = NoteId::new(*output.txid(), pool, output.output_index() as u16);
-                match self.get_received_note(note_id) {
+                // An index that doesn't fit in `u16` can't refer to a shielded output.
+                let note_id = u16::try_from(output.output_index())
+                    .ok()
+                    .map(|index| NoteId::new(*output.txid(), pool, index));
+                match note_id.and_then(|note_id| self.get_received_note(note_id)) {
                     Some(note) => (note.lock_expiry_height, note.lock_owner),
                     None => return Ok(false),
                 }

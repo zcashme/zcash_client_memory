@@ -194,7 +194,12 @@ impl<P: consensus::Parameters> WalletRead for MemoryWalletDb<P> {
     }
 
     fn get_wallet_recover_until(&self) -> Result<Option<BlockHeight>, Self::Error> {
-        Ok(None)
+        tracing::debug!("get_wallet_recover_until");
+        Ok(self
+            .accounts
+            .values()
+            .filter_map(|account| account.birthday().recover_until())
+            .max())
     }
 
     fn get_wallet_summary(
@@ -964,5 +969,53 @@ fn seed_matches_derived_account<P: consensus::Parameters>(
         )))
     } else {
         Ok(seed_fingerprint_match && uivk_match)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zcash_client_backend::data_api::{
+        AccountBirthday, AccountPurpose, WalletRead, WalletWrite,
+    };
+    use zcash_keys::keys::UnifiedSpendingKey;
+    use zcash_primitives::block::BlockHash;
+    use zcash_protocol::consensus::Network;
+
+    use crate::MemoryWalletDb;
+
+    #[test]
+    fn get_wallet_recover_until_is_max_across_accounts() {
+        let network = Network::TestNetwork;
+        let mut wallet = MemoryWalletDb::new(network, 100);
+        let ufvk = |seed: u8| {
+            UnifiedSpendingKey::from_seed(&network, &[seed; 32], zip32::AccountId::ZERO)
+                .unwrap()
+                .to_unified_full_viewing_key()
+        };
+
+        // An account with no recovery horizon.
+        let birthday = AccountBirthday::from_sapling_activation(&network, BlockHash([0; 32]));
+        wallet
+            .import_account_ufvk("a", &ufvk(0), &birthday, AccountPurpose::ViewOnly, None)
+            .unwrap();
+        assert_eq!(wallet.get_wallet_recover_until().unwrap(), None);
+
+        // An account that is recovering up to `recover_until`.
+        let recover_until = birthday.height() + 100;
+        let recovering_birthday =
+            AccountBirthday::from_parts(birthday.prior_chain_state().clone(), Some(recover_until));
+        wallet
+            .import_account_ufvk(
+                "b",
+                &ufvk(1),
+                &recovering_birthday,
+                AccountPurpose::ViewOnly,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            wallet.get_wallet_recover_until().unwrap(),
+            Some(recover_until)
+        );
     }
 }

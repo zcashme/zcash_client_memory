@@ -70,18 +70,32 @@ impl<P: consensus::Parameters> OutputLockStore for MemoryWalletDb<P> {
         lock_expiry_height: BlockHeight,
     ) -> Result<usize, LockError<Self::Error>> {
         for output in outputs {
-            if self.account_for_output_ref(output).map_err(LockError::Storage)?.is_none() {
+            if self
+                .account_for_output_ref(output)
+                .map_err(LockError::Storage)?
+                .is_none()
+            {
                 return Err(LockError::LockFailure(*output));
             }
-            if !self.is_output_lockable_by(output, owner).map_err(LockError::Storage)? {
+            if !self
+                .is_output_lockable_by(output, owner)
+                .map_err(LockError::Storage)?
+            {
                 return Err(LockError::LockFailure(*output));
             }
         }
         for output in outputs {
             match output.pool() {
                 PoolType::Shielded(pool) => {
-                    let note_id = NoteId::new(*output.txid(), pool, output.output_index() as u16);
-                    if let Some(note) = self.received_notes.iter_mut().find(|n| n.note_id == note_id) {
+                    // An index that doesn't fit in `u16` can't refer to a shielded output.
+                    let note_id = u16::try_from(output.output_index())
+                        .ok()
+                        .map(|index| NoteId::new(*output.txid(), pool, index));
+                    if let Some(note) = self
+                        .received_notes
+                        .iter_mut()
+                        .find(|n| Some(n.note_id) == note_id)
+                    {
                         note.lock_expiry_height = Some(lock_expiry_height);
                         note.lock_owner = Some(owner);
                     }
@@ -101,9 +115,13 @@ impl<P: consensus::Parameters> OutputLockStore for MemoryWalletDb<P> {
     fn unlock_output(&mut self, output: &OutputRef, owner: LockOwner) -> Result<bool, Self::Error> {
         let is_owned = match output.pool() {
             PoolType::Shielded(pool) => {
-                let note_id = NoteId::new(*output.txid(), pool, output.output_index() as u16);
-                self.received_notes.iter_mut()
-                    .find(|n| n.note_id == note_id)
+                // An index that doesn't fit in `u16` can't refer to a shielded output.
+                let note_id = u16::try_from(output.output_index())
+                    .ok()
+                    .map(|index| NoteId::new(*output.txid(), pool, index));
+                self.received_notes
+                    .iter_mut()
+                    .find(|n| Some(n.note_id) == note_id)
                     .and_then(|note| {
                         if note.lock_owner == Some(owner) {
                             note.lock_expiry_height = None;
@@ -116,7 +134,8 @@ impl<P: consensus::Parameters> OutputLockStore for MemoryWalletDb<P> {
             }
             PoolType::Transparent => {
                 let outpoint = OutPoint::new((*output.txid()).into(), output.output_index());
-                self.transparent_received_outputs.get_mut(&outpoint)
+                self.transparent_received_outputs
+                    .get_mut(&outpoint)
                     .and_then(|txo| {
                         if txo.lock_owner == Some(owner) {
                             txo.lock_expiry_height = None;
@@ -152,11 +171,15 @@ impl<P: consensus::Parameters> OutputLockStore for MemoryWalletDb<P> {
     }
 
     fn get_locked_outputs(&self, account: Self::AccountId) -> Result<Vec<OutputRef>, Self::Error> {
+        // Without a known chain tip, stored locks are treated as active, as in
+        // `is_output_lockable_by`.
         let chain_tip = self.chain_height()?;
         let mut result = Vec::new();
         for note in self.received_notes.iter() {
             if note.account_id == account
-                && note.lock_expiry_height.is_some_and(|h| chain_tip.is_some_and(|tip| h > tip))
+                && note
+                    .lock_expiry_height
+                    .is_some_and(|h| chain_tip.is_none_or(|tip| h > tip))
             {
                 result.push(OutputRef::from(note.note_id));
             }
@@ -164,7 +187,9 @@ impl<P: consensus::Parameters> OutputLockStore for MemoryWalletDb<P> {
         #[cfg(feature = "transparent-inputs")]
         for (outpoint, txo) in self.transparent_received_outputs.iter() {
             if txo.account_id == account
-                && txo.lock_expiry_height.is_some_and(|h| chain_tip.is_some_and(|tip| h > tip))
+                && txo
+                    .lock_expiry_height
+                    .is_some_and(|h| chain_tip.is_none_or(|tip| h > tip))
             {
                 result.push(OutputRef::new(
                     TxId::from_bytes(*outpoint.hash()),
